@@ -1,0 +1,23 @@
+SATARK DRISHTI - LIVE VIDEO TEST REPORT
+Test: Local Live Video Streaming
+
+Camera:
+Chicony USB2.0 Camera
+
+Streaming Pipeline:
+Camera -> FFmpeg -> RTSP -> MediaMTX -> WebRTC
+
+RTSP Stream:
+rtsp://127.0.0.1:8554/test
+
+WebRTC Test:
+http://127.0.0.1:8889/test
+
+Result:
+PASS
+
+Observation:
+The camera feed was successfully captured by FFmpeg, published to MediaMTX using RTSP, and displayed successfully in the browser using WebRTC.
+
+Status:
+Live video pipeline successfully tested locally.
