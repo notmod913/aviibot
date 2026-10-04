@@ -1,5 +1,8 @@
 {
   "name": "tanstack_start_ts",
+  "version": "0.1.0",
+  "description": "Satark Drishti inspection monitoring desktop app",
+  "author": "Satark Drishti",
   "private": true,
   "sideEffects": false,
   "type": "module",
@@ -8,6 +11,8 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
+    "desktop:dev": "electron .",
+    "desktop:package": "npm run build && npm run build --prefix inspector-portal && electron-builder --win nsis",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -78,11 +83,32 @@
     "eslint-plugin-prettier": "^5.2.6",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
+    "electron": "^41.0.0",
+    "electron-builder": "^26.8.1",
     "globals": "^15.15.0",
     "nitro": "3.0.260603-beta",
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
     "vite": "8.1.5"
+  },
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "org.satarkdrishti.desktop",
+    "productName": "Satark Drishti",
+    "directories": {
+      "output": "desktop-app"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "desktop/**/*",
+      "dist/client/**/*",
+      "dist/server/**/*",
+      "inspector-portal/dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis"]
+    }
   }
 }

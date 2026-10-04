@@ -1,9 +1,8 @@
 """
 Inspection schedule API.
 
-DEMO / IN-MEMORY DATA ONLY. `POST /schedule/generate` creates random demo
-schedule entries — it is a data generator for testing, not a real
-scheduling algorithm.
+Schedules are persisted in SQLite. `POST /schedule/generate` creates random
+demo entries; this is a data generator, not a real scheduling algorithm.
 """
 
 from fastapi import APIRouter, Query

@@ -1,9 +1,8 @@
 """
 Users API.
 
-DEMO / IN-MEMORY DATA ONLY. This is not an authentication system — it only
-exposes basic inspector/user records so the API shape exists for later
-database integration.
+Returns seeded demo inspector records from SQLite. This is not an
+authentication system.
 """
 
 from fastapi import APIRouter, HTTPException

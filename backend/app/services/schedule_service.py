@@ -1,17 +1,16 @@
 """
 Inspection schedule service.
 
-DEMO / IN-MEMORY DATA ONLY.
-`_SCHEDULE` acts as a stand-in table. `generate_random_schedule` creates
-demo schedule entries so the Inspector Portal has something to display
-before Member 4's database is connected.
+`generate_random_schedule` creates and persists demo schedule entries for
+the Inspector Portal.
 """
 
+import json
+import os
 import random
 import uuid
 from datetime import date, timedelta
-from typing import List
-
+from app.database import get_connection
 from app.schemas.schedule import ScheduleItem
 
 _DEMO_ORGANIZATIONS = [
@@ -29,42 +28,45 @@ _DEMO_TIMES = ["09:30 AM", "10:30 AM", "11:00 AM", "02:00 PM", "03:30 PM"]
 
 _DEMO_STATUSES = ["Scheduled", "In Progress", "Completed", "Missed"]
 
-# Demo/in-memory "table". Replace with a real database query later.
-_SCHEDULE: List[ScheduleItem] = [
-    ScheduleItem(
-        id="SCH-1001",
-        organization="Asha Bal Vikas Sanstha",
-        location="Kothrud, Pune",
-        date="2026-09-29",
-        time="10:30 AM",
-        inspector="Ramesh Kadam",
-        status="Scheduled",
-    ),
-    ScheduleItem(
-        id="SCH-1002",
-        organization="Sanjeevani Old Age Support Trust",
-        location="Hadapsar, Pune",
-        date="2026-09-29",
-        time="02:00 PM",
-        inspector="Ramesh Kadam",
-        status="Scheduled",
-    ),
-]
+def get_all_schedules() -> list[ScheduleItem]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT id, organization, location, date, time, inspector, status FROM schedules ORDER BY rowid"
+        ).fetchall()
+    return [_with_site_location(ScheduleItem.model_validate(dict(row))) for row in rows]
 
 
-def get_all_schedules() -> List[ScheduleItem]:
-    return _SCHEDULE
+def get_schedule_by_id(schedule_id: str) -> ScheduleItem | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT id, organization, location, date, time, inspector, status FROM schedules WHERE id = ?",
+            (schedule_id,),
+        ).fetchone()
+    item = ScheduleItem.model_validate(dict(row)) if row else None
+    return _with_site_location(item) if item else None
 
 
-def generate_random_schedule(count: int = 3) -> List[ScheduleItem]:
+def _with_site_location(item: ScheduleItem) -> ScheduleItem:
+    configured_sites = json.loads(os.getenv("SITE_LOCATIONS_JSON", "{}"))
+    site = configured_sites.get(item.organization, {})
+    return item.model_copy(
+        update={
+            "site_latitude": site.get("latitude"),
+            "site_longitude": site.get("longitude"),
+            "site_radius_m": site.get("radius_m"),
+        }
+    )
+
+
+def generate_random_schedule(count: int = 3) -> list[ScheduleItem]:
     """
     Create `count` new demo schedule entries with random organisation,
-    date, time, inspector and status, append them to the in-memory
-    schedule, and return only the newly created entries.
+    date, time, inspector and status, persist them in SQLite, and return
+    only the newly created entries.
 
     This is a demo data generator, not a real scheduling algorithm.
     """
-    new_items: List[ScheduleItem] = []
+    new_items: list[ScheduleItem] = []
 
     for _ in range(count):
         organization, location = random.choice(_DEMO_ORGANIZATIONS)
@@ -80,7 +82,17 @@ def generate_random_schedule(count: int = 3) -> List[ScheduleItem]:
             inspector=random.choice(_DEMO_INSPECTORS),
             status=random.choice(_DEMO_STATUSES),
         )
-        _SCHEDULE.append(item)
         new_items.append(item)
+
+    with get_connection() as connection:
+        connection.executemany(
+            """INSERT INTO schedules
+            (id, organization, location, date, time, inspector, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (item.id, item.organization, item.location, item.date, item.time, item.inspector, item.status)
+                for item in new_items
+            ],
+        )
 
     return new_items

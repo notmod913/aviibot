@@ -4,6 +4,9 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  server: {
+    watch: { ignored: ["**/desktop-app/**", "**/release/**"] },
+  },
   plugins: [
     tanstackStart({ server: { entry: "server" } }),
     react(),

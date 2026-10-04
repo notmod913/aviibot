@@ -1,10 +1,8 @@
 """
 Inspection records API.
 
-DEMO / IN-MEMORY DATA ONLY. This is the API shape the Inspector Portal
-(Member 2) is expected to consume once it is connected to this backend.
-Storage will move to PostgreSQL/PostGIS (Member 4) without this contract
-needing to change.
+Inspection submissions are persisted in SQLite. PostgreSQL/PostGIS can
+replace the storage later without changing this API contract.
 """
 
 from fastapi import APIRouter, HTTPException, status
