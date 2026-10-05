@@ -1,5 +1,5 @@
-import { Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Area,
   AreaChart,
@@ -18,6 +18,19 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { AuthorityEvidenceReview, type SubmittedInspection } from "@/components/satark/camera-evidence";
+import { GpsMapFrame } from "@/components/satark/gps-map-frame";
+import { ReverseGeocodedAddress } from "@/components/satark/reverse-geocoded-address";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -26,7 +39,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { usePortalData, useUpdatePortalSettings } from "@/lib/portal-data";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { usePortalData, useReloadPortalData, useUpdatePortalSettings } from "@/lib/portal-data";
+import type { Inspection } from "@/lib/demo-data";
 import {
   DemoNote,
   Filters,
@@ -58,7 +74,9 @@ import {
   FileCheck2,
   FileText,
   MapPin,
+  Plus,
   Radio,
+  RefreshCw,
   Search,
   ShieldCheck,
   Shuffle,
@@ -81,9 +99,111 @@ const chartTooltip = {
   labelStyle: { color: "var(--foreground)", fontWeight: 700 },
 };
 
+type ScheduledInspection = {
+  id: string;
+  organization: string;
+  location: string;
+  date: string;
+  time: string;
+  inspector: string;
+  status: string;
+  site_latitude: number | null;
+  site_longitude: number | null;
+  site_radius_m: number | null;
+};
+
+type ScheduleOrganization = {
+  id: string;
+  name: string;
+  location: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  radius_m: number | null;
+};
+
+type ScheduleInspector = {
+  id: number;
+  name: string;
+  designation: string;
+  region: string;
+};
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function defaultScheduleSlot() {
+  const nextSlot = new Date();
+  nextSlot.setHours(nextSlot.getHours() + 1, 0, 0, 0);
+  return {
+    date: localDateInputValue(nextSlot),
+    time: `${String(nextSlot.getHours()).padStart(2, "0")}:${String(nextSlot.getMinutes()).padStart(2, "0")}`,
+  };
+}
+
+const scheduleApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+
+function formatSiteDistance(distanceM: number) {
+  return distanceM >= 1000
+    ? `${(distanceM / 1000).toLocaleString("en-IN", { maximumFractionDigits: 1 })} km`
+    : `${distanceM.toLocaleString("en-IN", { maximumFractionDigits: 0 })} m`;
+}
+
 export function DashboardPage() {
   const [range, setRange] = useState("This Month");
-  const { dashboard, analytics, inspections, settings } = usePortalData();
+  const { dashboard, inspections, organizations, settings } = usePortalData();
+  const currentDate = new Date();
+  const monthlyInspections = inspections.filter((inspection) => {
+    const timestamp = new Date(`${inspection.date} ${inspection.time}`);
+    return !Number.isNaN(timestamp.getTime())
+      && timestamp.getMonth() === currentDate.getMonth()
+      && timestamp.getFullYear() === currentDate.getFullYear();
+  });
+  const verifiedCount = monthlyInspections.filter((inspection) => inspection.status === "Verified").length;
+  const pendingCount = monthlyInspections.filter((inspection) => inspection.status === "Submitted" || inspection.status === "Pending").length;
+  const flaggedCount = monthlyInspections.filter((inspection) => inspection.status === "Flagged" || inspection.gps === "Outside radius").length;
+  const verificationRate = monthlyInspections.length
+    ? `${Math.round((verifiedCount / monthlyInspections.length) * 100)}% of records`
+    : "No records this month";
+  const chartData = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(today);
+    const days = range === "Today" ? 1 : range === "This Week" ? 7 : range === "This Month" ? today.getDate() : 30;
+    if (range === "This Month") start.setDate(1);
+    else start.setDate(today.getDate() - days + 1);
+
+    const groups = new Map<string, { day: string; total: number; verified: number; pending: number; random: number; flagged: number }>();
+    for (let cursor = new Date(start); cursor <= today; cursor.setDate(cursor.getDate() + 1)) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(cursor.getDate()).padStart(2, "0")}`;
+      groups.set(key, {
+        day: cursor.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
+        total: 0,
+        verified: 0,
+        pending: 0,
+        random: 0,
+        flagged: 0,
+      });
+    }
+
+    for (const inspection of inspections) {
+      const timestamp = new Date(`${inspection.date} ${inspection.time}`);
+      if (Number.isNaN(timestamp.getTime())) continue;
+      const key = `${timestamp.getFullYear()}-${String(timestamp.getMonth() + 1).padStart(2, "0")}-${String(timestamp.getDate()).padStart(2, "0")}`;
+      const group = groups.get(key);
+      if (!group) continue;
+      group.total += 1;
+      if (inspection.status === "Verified") group.verified += 1;
+      if (inspection.status === "Submitted" || inspection.status === "Pending") group.pending += 1;
+      if (inspection.status === "Flagged" || inspection.gps === "Outside radius") group.flagged += 1;
+      if (inspection.scheduleId) group.random += 1;
+    }
+    return [...groups.values()];
+  }, [inspections, range]);
   const primaryInspection = inspections[0];
   return (
     <>
@@ -117,33 +237,33 @@ export function DashboardPage() {
       <div className="mb-7 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="Total Organizations"
-          value={dashboard.totalOrganizations}
+          value={organizations.length}
           detail={`${dashboard.activeDistricts} active districts`}
           icon={Building2}
         />
         <StatCard
           label="Inspections This Month"
-          value={dashboard.inspectionsThisMonth}
-          detail={dashboard.monthlyChange}
+          value={monthlyInspections.length}
+          detail="From stored inspections"
           icon={FileCheck2}
         />
         <StatCard
           label="Verified Inspections"
-          value={dashboard.verifiedInspections}
-          detail={dashboard.verificationRate}
+          value={verifiedCount}
+          detail={verificationRate}
           icon={ShieldCheck}
           toneName="success"
         />
         <StatCard
           label="Pending Verification"
-          value={dashboard.pendingVerification}
+          value={pendingCount}
           detail="Awaiting authority review"
           icon={Timer}
           toneName="warning"
         />
         <StatCard
           label="Flagged Inspections"
-          value={dashboard.flaggedInspections}
+          value={flaggedCount}
           detail="Requires attention"
           icon={AlertTriangle}
           toneName="danger"
@@ -163,9 +283,9 @@ export function DashboardPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
             [
-              Shuffle,
-              "Random Inspection Scheduling",
-              "Unpredictable windows reduce advance preparation.",
+              CalendarDays,
+              "Organization-Based Scheduling",
+              "Assign inspections to registered sites and inspectors.",
             ],
             [
               Camera,
@@ -225,7 +345,7 @@ export function DashboardPage() {
               <StatusBadge>{range}</StatusBadge>
             </div>
             <ResponsiveContainer width="100%" height="88%">
-              <AreaChart data={analytics}>
+              <AreaChart data={chartData}>
                 <defs>
                   <linearGradient id="areaTotal" x1="0" y1="0" x2="0" y2="1">
                     <stop
@@ -268,7 +388,7 @@ export function DashboardPage() {
           <div className="h-[330px] rounded-lg border bg-card p-4 shadow-card">
             <p className="text-xs font-bold">Evidence outcomes</p>
             <ResponsiveContainer width="100%" height="88%">
-              <BarChart data={analytics}>
+              <BarChart data={chartData}>
                 <CartesianGrid stroke="var(--border)" vertical={false} />
                 <XAxis
                   dataKey="day"
@@ -337,20 +457,314 @@ export function DashboardPage() {
 
 export function InspectionsPage({ records = false }: { records?: boolean }) {
   const { inspections } = usePortalData();
+  const reloadPortalData = useReloadPortalData();
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
+  const [schedules, setSchedules] = useState<ScheduledInspection[]>([]);
+  const [scheduleLoading, setScheduleLoading] = useState(!records);
+  const [scheduleError, setScheduleError] = useState("");
+  const [scheduleRefresh, setScheduleRefresh] = useState(0);
+
+  useEffect(() => {
+    if (records) return;
+    let active = true;
+    let loading = false;
+    const controller = new AbortController();
+    async function loadSchedules() {
+      if (loading) return;
+      loading = true;
+      setScheduleLoading(true);
+      try {
+        const response = await fetch(`${scheduleApiBaseUrl}/api/schedule`, { signal: controller.signal });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.detail || `Schedule request failed (${response.status}).`);
+        if (active) {
+          setSchedules(payload as ScheduledInspection[]);
+          setScheduleError("");
+        }
+      } catch (requestError: unknown) {
+        if (active && !controller.signal.aborted) {
+          setScheduleError(requestError instanceof Error ? requestError.message : "Could not load scheduled inspections.");
+        }
+      } finally {
+        loading = false;
+        if (active) setScheduleLoading(false);
+      }
+    }
+    const refreshOnFocus = () => void loadSchedules();
+    void loadSchedules();
+    const timer = window.setInterval(() => void loadSchedules(), 5_000);
+    window.addEventListener("focus", refreshOnFocus);
+    window.addEventListener("online", refreshOnFocus);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("online", refreshOnFocus);
+    };
+  }, [records, scheduleRefresh]);
+
+  if (records) {
+    return (
+      <>
+        <PageHeader
+          eyebrow="Digital archive"
+          title="Inspection Records"
+          description="Persisted inspection records, including Inspector submissions and seeded examples."
+        />
+        <DemoNote />
+        <AuthorityEvidenceReview onViewRecord={setSelectedRecordId} />
+        <Filters placeholder="Search by inspection ID, organization or inspector..." />
+        <Dialog open={selectedRecordId !== null} onOpenChange={(open) => !open && setSelectedRecordId(null)}>
+          <DialogContent className="max-h-[90vh] max-w-7xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Inspection record details</DialogTitle>
+              <DialogDescription>Review this record without leaving Inspection Records.</DialogDescription>
+            </DialogHeader>
+            {selectedRecordId && <InspectionDetailPage id={selectedRecordId} />}
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
   return (
     <>
       <PageHeader
-        eyebrow={records ? "Digital archive" : "Field operations"}
-        title={records ? "Inspection Records" : "Inspections"}
-        description={
-          records
-            ? "Search synchronized inspection history and review each connected evidence trail."
-            : "Review active and completed inspections, evidence status and synchronization state."
+        eyebrow="Field operations"
+        title="Inspections"
+        description="Review scheduled assignments and submitted inspection records from the backend."
+        actions={
+          <Button
+            variant="outline"
+            onClick={() => {
+              setScheduleRefresh((value) => value + 1);
+              reloadPortalData();
+            }}
+            disabled={scheduleLoading}
+          >
+            <RefreshCw className={scheduleLoading ? "animate-spin" : ""} />
+            Refresh data
+          </Button>
         }
       />
       <DemoNote />
+      {scheduleError && <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert">{scheduleError}</div>}
+      <Section
+        title="Inspection activity"
+        description="Assignments that have not been submitted yet. Submitted and completed inspections are available in Inspection Records."
+      >
+        {(() => {
+          const liveBySchedule = new Map<string, Inspection>();
+          for (const inspection of inspections) {
+            if (inspection.isLive && inspection.scheduleId && !liveBySchedule.has(inspection.scheduleId)) {
+              liveBySchedule.set(inspection.scheduleId, inspection);
+            }
+          }
+          const scheduleRows: Inspection[] = schedules
+            .filter((schedule) => schedule.status !== "Completed" && !liveBySchedule.has(schedule.id))
+            .map((schedule) => ({
+              id: schedule.id,
+              organization: schedule.organization,
+              organizationId: "",
+              location: schedule.location,
+              inspector: schedule.inspector,
+              date: new Date(`${schedule.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+              time: schedule.time,
+              scheduledTime: `${schedule.date} · ${schedule.time}`,
+              gps: "Pending",
+              photo: "Pending",
+              status: "Scheduled",
+              sync: "Not submitted",
+              duration: "Not recorded",
+              distance: "Not available",
+              coordinates: "Not captured",
+              evidenceId: schedule.id,
+              scheduleId: schedule.id,
+              isScheduleOnly: true,
+            }));
+          return <InspectionTable rows={scheduleRows} />;
+        })()}
+      </Section>
       <Filters placeholder="Search by inspection ID, organization or inspector..." />
-      <InspectionTable rows={inspections} />
+    </>
+  );
+}
+
+type LiveInspectionDetail = {
+  id: string;
+  organization: string;
+  location: string;
+  date: string;
+  time: string;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  inspector: string;
+  status: string;
+  notes: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  location_accuracy_m: number | null;
+  location_captured_at: string | null;
+  photo_captured_at: string | null;
+  submitted_at: string | null;
+  location_distance_m: number | null;
+  location_check_status: string | null;
+  schedule_id: string | null;
+  photo_media_id: string | null;
+};
+
+const inspectorApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+
+function LiveInspectorRecordDetail({ id, mapRadiusM }: { id: string; mapRadiusM: number }) {
+  const { organizations } = usePortalData();
+  const [record, setRecord] = useState<LiveInspectionDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [photoFailed, setPhotoFailed] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setPhotoFailed(false);
+    fetch(`${inspectorApiBaseUrl}/api/inspections/${encodeURIComponent(id)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.detail || `Inspection request failed (${response.status}).`);
+        setRecord(payload as LiveInspectionDetail);
+        setError("");
+      })
+      .catch((requestError: unknown) => {
+        if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : "Could not load this inspection.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [id]);
+
+  if (loading) return <div className="grid min-h-48 place-items-center text-sm text-muted-foreground">Loading submitted inspection…</div>;
+  if (error || !record) return <div className="rounded-lg border p-6 text-sm text-muted-foreground">{error || "Inspection not found."}</div>;
+
+  const hasLocation = record.latitude != null && record.longitude != null;
+  const boundaryRadiusM = organizations.find((organization) => organization.name === record.organization)?.radius_m ?? mapRadiusM;
+  const latitude = record.latitude ?? 0;
+  const longitude = record.longitude ?? 0;
+  const photoUrl = record.photo_media_id
+    ? `${inspectorApiBaseUrl}/api/media/${encodeURIComponent(record.photo_media_id)}`
+    : null;
+  const gpsStatus = record.location_check_status === "verified"
+    ? "Verified"
+    : record.location_check_status === "outside_radius" ? "Outside radius" : "Pending";
+  const actualInspectionTime = record.location_captured_at
+    ? new Date(record.location_captured_at).toLocaleString("en-IN")
+    : record.submitted_at ? new Date(record.submitted_at).toLocaleString("en-IN") : "Not recorded";
+  const scheduledInspectionTime = record.scheduled_date && record.scheduled_time
+    ? `${new Date(`${record.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} · ${record.scheduled_time}`
+    : "Not recorded";
+  const evidenceSummary: Inspection = {
+    id: record.id,
+    organization: record.organization,
+    organizationId: "",
+    inspector: record.inspector,
+    date: new Date(`${record.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+    time: record.time,
+    scheduledTime: scheduledInspectionTime,
+    gps: gpsStatus,
+    photo: record.photo_media_id ? "Captured" : "Pending",
+    status: record.status === "Verified" || record.status === "Flagged" ? record.status : "Submitted",
+    sync: "Synced",
+    duration: "Not recorded",
+    distance: record.location_distance_m == null ? "Not available" : `${record.location_distance_m} m`,
+    coordinates: hasLocation ? `${latitude.toFixed(5)}° , ${longitude.toFixed(5)}°` : "Not captured",
+    evidenceId: record.id,
+    photoMediaId: record.photo_media_id,
+    photoUrl,
+  };
+  const timeline = [
+    ...(record.schedule_id ? [{ title: "Inspection scheduled", time: scheduledInspectionTime, detail: `Assigned schedule ${record.schedule_id}` }] : []),
+    ...(record.location_captured_at ? [{ title: "GPS position captured", time: actualInspectionTime, detail: hasLocation ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)} · accuracy ±${record.location_accuracy_m ?? "unknown"} m` : "Location timestamp recorded" }] : []),
+    ...(record.photo_media_id ? [{ title: "Photo evidence attached", time: record.photo_captured_at ? new Date(record.photo_captured_at).toLocaleString("en-IN") : "Capture time not recorded", detail: "Photo saved with the inspection record" }] : []),
+    ...(record.submitted_at ? [{ title: "Inspection record stored", time: new Date(record.submitted_at).toLocaleString("en-IN"), detail: "Record is available to Authority reviewers" }] : [{ title: "Inspection record stored", time: "Receipt time not recorded", detail: "Record is available to Authority reviewers" }]),
+  ];
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Inspection evidence record"
+        title={record.id}
+        description="Review the submitted evidence. GPS presence is one layer and does not independently establish identity."
+        actions={<StatusBadge>{record.status}</StatusBadge>}
+      />
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Organization", record.organization],
+          ["Inspector", record.inspector],
+          ["Scheduled time", scheduledInspectionTime],
+          ["Actual inspection", actualInspectionTime],
+          ["Duration", "Not recorded"],
+          ["Inspection status", record.status],
+          ["Evidence ID", record.id],
+          ["Sync status", "Synced"],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-lg border bg-card p-4 shadow-card">
+            <p className="text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground">{label}</p>
+            <p className="mt-2 text-sm font-semibold">{value}</p>
+          </div>
+        ))}
+      </div>
+      {record.notes && <div className="mb-6 rounded-lg border bg-card p-4"><p className="text-xs font-bold text-muted-foreground">Inspector notes</p><p className="mt-2 whitespace-pre-wrap text-sm">{record.notes}</p></div>}
+      <Section title="Location verification" description="Captured GPS position and its server-side check against the scheduled site boundary.">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,.7fr)]">
+          {hasLocation
+            ? <div>
+              <GpsMapFrame latitude={latitude} longitude={longitude} radiusM={boundaryRadiusM} title={`Captured GPS location for ${record.organization}`} />
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="text-muted-foreground">Map marker is the Inspector’s saved GPS fix.</span>
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-primary underline-offset-4 hover:underline"
+                >
+                  Open captured location in Google Maps
+                </a>
+              </div>
+            </div>
+            : <div className="grid min-h-[310px] place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">No GPS coordinates recorded.</div>}
+          <div className="rounded-lg border bg-card p-5 shadow-card">
+            <div className="flex items-center justify-between gap-3"><div className="grid size-11 place-items-center rounded-full bg-success-soft text-success"><MapPin /></div><StatusBadge>{gpsStatus}</StatusBadge></div>
+            <p className="mt-5 text-xs font-bold uppercase tracking-[.16em] text-success">GPS {gpsStatus.toUpperCase()}</p>
+            <h3 className="mt-2 font-display text-xl font-bold">{record.location_distance_m == null ? "Distance not available" : `${formatSiteDistance(record.location_distance_m)} from registered site`}</h3>
+            <div className="mt-5 space-y-3 border-t pt-4 text-xs">
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Registered inspection site</span><span className="text-right font-semibold">{record.location}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Inspector GPS coordinates</span><span className="text-right font-semibold">{evidenceSummary.coordinates}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">GPS accuracy</span><span className="font-semibold">{record.location_accuracy_m == null ? "Unavailable" : `±${record.location_accuracy_m} m`}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Boundary</span><span className="font-semibold">{record.location_check_status === "not_configured" ? "Not configured" : `Authorized radius · ${boundaryRadiusM} metres`}</span></div>
+              {hasLocation && <ReverseGeocodedAddress latitude={latitude} longitude={longitude} />}
+            </div>
+          </div>
+        </div>
+      </Section>
+      <Section title="Live photo evidence" description="Photo attached to the Inspector submission.">
+        {photoUrl && !photoFailed
+          ? <div className="overflow-hidden rounded-lg border bg-black"><img crossOrigin="anonymous" src={photoUrl} alt={`Inspection evidence for ${record.organization}`} onError={() => setPhotoFailed(true)} className="max-h-[520px] w-full object-contain" /><div className="flex items-center justify-between gap-3 bg-card px-4 py-3"><span className="text-sm font-semibold">Captured photo evidence</span><StatusBadge>Captured</StatusBadge></div></div>
+          : <div className="grid min-h-48 place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">{photoFailed ? "The evidence photo could not be loaded." : "No photo attached to this record."}</div>}
+      </Section>
+      <Section title="Evidence summary" description="The evidence linked to this inspection record.">
+        <InspectionEvidenceCard inspection={evidenceSummary} />
+      </Section>
+      <Section title="Evidence timeline" description="Only timestamps captured or stored with this record are shown.">
+        <div className="rounded-lg border bg-card p-5 shadow-card">
+          <div className="relative ml-2 border-l border-border pl-7">
+            {timeline.map(({ title, time, detail }) => (
+              <div key={title} className="relative pb-6 last:pb-0">
+                <span className="absolute -left-[35px] top-0 grid size-4 place-items-center rounded-full bg-success ring-4 ring-success-soft"><CheckCircle2 className="size-2.5 text-primary-foreground" /></span>
+                <div className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto]"><div><p className="text-sm font-semibold">{title}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div><time className="text-[11px] font-medium text-muted-foreground">{time}</time></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Section>
     </>
   );
 }
@@ -358,8 +772,8 @@ export function InspectionsPage({ records = false }: { records?: boolean }) {
 export function InspectionDetailPage({ id }: { id: string }) {
   const { inspections, timeline, mapRadiusM } = usePortalData();
   const inspection = inspections.find((item) => item.id === id);
-  if (!inspection) {
-    return <div className="rounded-lg border p-6 text-sm text-muted-foreground">Inspection not found.</div>;
+  if (!inspection || inspection.isPersisted) {
+    return <LiveInspectorRecordDetail id={id} mapRadiusM={mapRadiusM} />;
   }
   return (
     <>
@@ -394,7 +808,7 @@ export function InspectionDetailPage({ id }: { id: string }) {
       </div>
       <Section
         title="Location verification"
-        description="Organization location and captured inspector GPS position within the configured boundary."
+        description="Compare the Inspector’s captured GPS position with the organization’s registered inspection site and boundary."
       >
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,.7fr)]">
           <GPSMap flagged={inspection.gps === "Outside radius"} radiusM={mapRadiusM} />
@@ -411,7 +825,7 @@ export function InspectionDetailPage({ id }: { id: string }) {
               GPS {inspection.gps.toUpperCase()}
             </p>
             <h3 className="mt-2 font-display text-xl font-bold">
-              {inspection.distance} from registered location
+              {inspection.distance} from registered inspection site
             </h3>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
               {inspection.gps === "Verified"
@@ -421,13 +835,13 @@ export function InspectionDetailPage({ id }: { id: string }) {
             <div className="mt-5 space-y-3 border-t pt-4 text-xs">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">
-                  Organization location
+                  Registered inspection site
                 </span>
                 <span className="font-semibold">Registered site</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">
-                  Captured coordinates
+                  Inspector GPS coordinates
                 </span>
                 <span className="font-semibold">{inspection.coordinates}</span>
               </div>
@@ -478,14 +892,75 @@ export function InspectionDetailPage({ id }: { id: string }) {
 }
 
 export function OrganizationsPage() {
-  const { organizations } = usePortalData();
+  const { organizations, retry } = usePortalData();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [organizationForm, setOrganizationForm] = useState({
+    name: "",
+    location: "",
+    address: "",
+    latitude: "",
+    longitude: "",
+    radius_m: "100",
+  });
+
+  async function createOrganization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`${scheduleApiBaseUrl}/api/organizations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: organizationForm.name.trim(),
+          location: organizationForm.location.trim(),
+          address: organizationForm.address.trim(),
+          latitude: Number(organizationForm.latitude),
+          longitude: Number(organizationForm.longitude),
+          radius_m: Number(organizationForm.radius_m),
+        }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.detail || `Organization could not be saved (${response.status}).`);
+      setDialogOpen(false);
+      setOrganizationForm({ name: "", location: "", address: "", latitude: "", longitude: "", radius_m: "100" });
+      retry();
+      toast.success("Organization added to the registry");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Organization could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Organization oversight"
         title="Organizations"
         description="Search registered organizations and review inspection coverage, verification history and attention indicators."
+        actions={<Button onClick={() => setDialogOpen(true)}><Plus />Add organization</Button>}
       />
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add organization</DialogTitle>
+            <DialogDescription>Register the organization and its real inspection boundary. A registration ID will be generated automatically.</DialogDescription>
+          </DialogHeader>
+          <form className="grid gap-3 sm:grid-cols-2" onSubmit={(event) => void createOrganization(event)}>
+            <label className="text-xs font-medium">Organization name<input required maxLength={150} value={organizationForm.name} onChange={(event) => setOrganizationForm((current) => ({ ...current, name: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            <label className="text-xs font-medium">District / location<input required maxLength={150} value={organizationForm.location} onChange={(event) => setOrganizationForm((current) => ({ ...current, location: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            <label className="text-xs font-medium sm:col-span-2">Registered address<input required maxLength={300} value={organizationForm.address} onChange={(event) => setOrganizationForm((current) => ({ ...current, address: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            <label className="text-xs font-medium">Site latitude<input required type="number" step="any" min="-90" max="90" value={organizationForm.latitude} onChange={(event) => setOrganizationForm((current) => ({ ...current, latitude: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            <label className="text-xs font-medium">Site longitude<input required type="number" step="any" min="-180" max="180" value={organizationForm.longitude} onChange={(event) => setOrganizationForm((current) => ({ ...current, longitude: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            <label className="text-xs font-medium">Authorized radius (metres)<input required type="number" min="1" max="100000" value={organizationForm.radius_m} onChange={(event) => setOrganizationForm((current) => ({ ...current, radius_m: event.target.value }))} className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm" /></label>
+            {error && <p className="text-sm text-destructive sm:col-span-2" role="alert">{error}</p>}
+            <div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save organization"}</Button></div>
+          </form>
+        </DialogContent>
+      </Dialog>
       <DemoNote />
       <Filters placeholder="Search organization, registration ID or location..." />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -534,12 +1009,73 @@ export function OrganizationsPage() {
 }
 
 export function OrganizationProfilePage({ id }: { id: string }) {
-  const { organizations, inspections, timeline, mapRadiusM } = usePortalData();
+  const { organizations, inspections, timeline, mapRadiusM, retry } = usePortalData();
+  const navigate = useNavigate();
+  const [updatingVerification, setUpdatingVerification] = useState(false);
+  const [deletingOrganization, setDeletingOrganization] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [actionError, setActionError] = useState("");
   const org = organizations.find((item) => item.id === id);
   if (!org) {
     return <div className="rounded-lg border p-6 text-sm text-muted-foreground">Organization not found.</div>;
   }
+
+  async function updateVerification(verification: "Verified" | "Flagged") {
+    setUpdatingVerification(true);
+    setActionError("");
+    try {
+      const response = await fetch(`${scheduleApiBaseUrl}/api/organizations/${encodeURIComponent(org.id)}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verification }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.detail || `Organization review update failed (${response.status}).`);
+      retry();
+      toast.success(`${org.name} marked ${verification.toLowerCase()}`);
+    } catch (reviewError) {
+      const message = reviewError instanceof Error ? reviewError.message : "Could not update organization status.";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setUpdatingVerification(false);
+    }
+  }
+
+  async function deleteOrganization() {
+    setDeletingOrganization(true);
+    setActionError("");
+    try {
+      const response = await fetch(`${scheduleApiBaseUrl}/api/organizations/${encodeURIComponent(org.id)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail || `Organization could not be deleted (${response.status}).`);
+      }
+      retry();
+      toast.success(`${org.name} deleted. Existing inspection records are preserved.`);
+      await navigate({ to: "/organizations" });
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : "Could not delete organization.";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setDeletingOrganization(false);
+      setDeleteDialogOpen(false);
+    }
+  }
+
   const rows = inspections.filter((x) => x.organizationId === org.id);
+  const liveRows = rows.filter((item) => item.isLive);
+  const profileTimeline = liveRows.length > 0
+    ? liveRows.flatMap((item) => [
+      ...(item.scheduleId ? [{ title: "Random inspection scheduled", time: item.scheduledTime, detail: `Assignment ${item.scheduleId}` }] : []),
+      ...(item.locationCapturedAt ? [{ title: "Inspector GPS captured", time: new Date(item.locationCapturedAt).toLocaleString(), detail: `${item.coordinates} · accuracy ±${item.locationAccuracyM ?? "not recorded"} m` }] : []),
+      ...(item.photoMediaId ? [{ title: "Inspection photo attached", time: item.photoCapturedAt ? new Date(item.photoCapturedAt).toLocaleString() : "Capture time not recorded", detail: "Camera evidence linked to the inspection" }] : []),
+      { title: "Inspection submitted", time: item.submittedAt ? new Date(item.submittedAt).toLocaleString() : `${item.date} · ${item.time}`, detail: `Live inspection record ${item.id}` },
+    ])
+    : timeline;
   return (
     <>
       <PageHeader
@@ -562,6 +1098,7 @@ export function OrganizationProfilePage({ id }: { id: string }) {
               ["Last inspection", org.last],
               ["Total inspections", String(org.count)],
               ["Attention indicator", org.risk],
+              ["Verification boundary", org.radius_m == null ? "Not configured" : `Authorized radius · ${org.radius_m} metres`],
             ].map(([l, v]) => (
               <div key={l}>
                 <p className="text-muted-foreground">{l}</p>
@@ -570,8 +1107,40 @@ export function OrganizationProfilePage({ id }: { id: string }) {
             ))}
           </div>
         </div>
-        <GPSMap radiusM={mapRadiusM} />
+        {org.latitude != null && org.longitude != null
+          ? <GpsMapFrame latitude={org.latitude} longitude={org.longitude} radiusM={org.radius_m ?? mapRadiusM} title={`Registered location for ${org.name}`} />
+          : <GPSMap radiusM={mapRadiusM} />}
       </div>
+      <Section
+        title="Organization review"
+        description="New organizations remain pending until an authority reviews and verifies or flags them."
+      >
+        <div className="rounded-lg border bg-card p-5 shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[.12em] text-muted-foreground">Current status</p>
+              <div className="mt-2"><StatusBadge>{org.verification}</StatusBadge></div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void updateVerification("Verified")}
+                disabled={updatingVerification || org.verification === "Verified"}
+              >
+                <CheckCircle2 />{updatingVerification ? "Saving…" : "Mark verified"}
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => void updateVerification("Flagged")}
+                disabled={updatingVerification || org.verification === "Flagged"}
+              >
+                <AlertTriangle />{updatingVerification ? "Saving…" : "Flag organization"}
+              </Button>
+            </div>
+          </div>
+          {actionError && <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">{actionError}</p>}
+        </div>
+      </Section>
       <Section
         title="Inspection and verification history"
         description="Previous evidence records associated with this organization."
@@ -581,7 +1150,7 @@ export function OrganizationProfilePage({ id }: { id: string }) {
       <Section title="Previous inspection trail">
         <div className="rounded-lg border bg-card p-5 shadow-card">
           <div className="border-l pl-6">
-            {timeline.map(({ title, time }) => (
+            {profileTimeline.map(({ title, time }) => (
               <div key={title} className="relative pb-6 last:pb-0">
                 <span className="absolute -left-[29px] size-3 rounded-full bg-success ring-4 ring-success-soft" />
                 <p className="text-sm font-semibold">{title}</p>
@@ -591,62 +1160,311 @@ export function OrganizationProfilePage({ id }: { id: string }) {
           </div>
         </div>
       </Section>
+      <section className="mt-8 rounded-lg border border-destructive/30 bg-destructive/5 p-5">
+        <h2 className="text-sm font-bold text-destructive">Delete organization</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This removes the organization from the registry. Existing inspection records and schedules will be preserved.
+        </p>
+        <Button className="mt-4" variant="destructive" onClick={() => setDeleteDialogOpen(true)} disabled={deletingOrganization}>
+          {deletingOrganization ? "Deleting…" : "Delete organization"}
+        </Button>
+      </section>
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {org.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The organization will be removed from the registry. Existing inspection evidence and schedule history will remain stored.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingOrganization}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingOrganization}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteOrganization();
+              }}
+            >
+              {deletingOrganization ? "Deleting…" : "Delete organization"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
 
-export function RandomSchedulePage() {
-  const { randomSchedule, randomScheduleStats } = usePortalData();
+export function InspectionSchedulingPage() {
+  const [schedules, setSchedules] = useState<ScheduledInspection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [loadingOptions, setLoadingOptions] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [dialogError, setDialogError] = useState("");
+  const [organizations, setOrganizations] = useState<ScheduleOrganization[]>([]);
+  const [inspectors, setInspectors] = useState<ScheduleInspector[]>([]);
+  const [organizationQuery, setOrganizationQuery] = useState("");
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
+  const [selectedInspectorId, setSelectedInspectorId] = useState("");
+  const [scheduleSlot, setScheduleSlot] = useState(defaultScheduleSlot);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    fetch(`${scheduleApiBaseUrl}/api/schedule`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.detail || `Schedule request failed (${response.status}).`);
+        setSchedules(payload as ScheduledInspection[]);
+        setError("");
+      })
+      .catch((requestError: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(requestError instanceof Error ? requestError.message : "Could not load the schedule.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [refreshToken]);
+
+  async function openCreateDialog() {
+    setDialogError("");
+    setDialogOpen(true);
+    if (organizations.length > 0 && inspectors.length > 0) return;
+
+    setLoadingOptions(true);
+    try {
+      const [organizationResponse, inspectorResponse] = await Promise.all([
+        fetch(`${scheduleApiBaseUrl}/api/organizations`),
+        fetch(`${scheduleApiBaseUrl}/api/users`),
+      ]);
+      const [organizationPayload, inspectorPayload] = await Promise.all([
+        organizationResponse.json().catch(() => null),
+        inspectorResponse.json().catch(() => null),
+      ]);
+      if (!organizationResponse.ok) {
+        throw new Error(organizationPayload?.detail || `Organization request failed (${organizationResponse.status}).`);
+      }
+      if (!inspectorResponse.ok) {
+        throw new Error(inspectorPayload?.detail || `Inspector request failed (${inspectorResponse.status}).`);
+      }
+      const registeredOrganizations = organizationPayload as ScheduleOrganization[];
+      const registeredInspectors = inspectorPayload as ScheduleInspector[];
+      setOrganizations(registeredOrganizations);
+      setInspectors(registeredInspectors);
+      setSelectedOrganizationId((current) => current || registeredOrganizations[0]?.id || "");
+      setSelectedInspectorId((current) => current || String(registeredInspectors[0]?.id ?? ""));
+    } catch (requestError) {
+      setDialogError(requestError instanceof Error ? requestError.message : "Could not load registered organizations and inspectors.");
+    } finally {
+      setLoadingOptions(false);
+    }
+  }
+
+  async function createSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedOrganizationId || !selectedInspectorId) {
+      setDialogError("Choose a registered organization and an inspector.");
+      return;
+    }
+
+    setSaving(true);
+    setDialogError("");
+    try {
+      const response = await fetch(`${scheduleApiBaseUrl}/api/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organization_id: selectedOrganizationId,
+          inspector_id: Number(selectedInspectorId),
+          date: scheduleSlot.date,
+          time: scheduleSlot.time,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.detail || `Schedule could not be created (${response.status}).`);
+      }
+
+      setDialogOpen(false);
+      setRefreshToken((value) => value + 1);
+      toast.success(`Inspection scheduled for ${payload.organization}`);
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : "Could not create the schedule.";
+      setDialogError(message);
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const unsubmittedSchedules = schedules.filter((item) => item.status.trim().toLowerCase() !== "completed");
+  const upcomingCount = unsubmittedSchedules.filter((item) => item.status === "Scheduled").length;
+  const organizationCount = new Set(unsubmittedSchedules.map((item) => item.organization)).size;
+  const inspectorCount = new Set(unsubmittedSchedules.map((item) => item.inspector)).size;
+  const filteredOrganizations = organizations
+    .filter((organization) => `${organization.name} ${organization.location} ${organization.address}`.toLowerCase().includes(organizationQuery.trim().toLowerCase()))
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name));
+
   return (
     <>
       <PageHeader
-        eyebrow="Unpredictable scheduling"
-        title="Random Inspection Engine"
-        description="Inspection timings are generated unpredictably to reduce the possibility of organizations preparing specifically for an inspection."
-        actions={<StatusBadge>Randomized</StatusBadge>}
+        eyebrow="Live inspection scheduling"
+        title="Inspection Scheduling"
+        description="Schedule an inspection for a registered organization and assign it to an inspector."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={() => void openCreateDialog()} disabled={loadingOptions || loading}>
+              <Plus />Create schedule
+            </Button>
+            <Button variant="outline" onClick={() => setRefreshToken((value) => value + 1)} disabled={loading}>
+              <RefreshCw className={loading ? "animate-spin" : ""} />Refresh
+            </Button>
+          </div>
+        }
       />
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Create inspection schedule</DialogTitle>
+            <DialogDescription>Select an organization from the live registry, assign an inspector, and choose the inspection date and time.</DialogDescription>
+          </DialogHeader>
+          {loadingOptions ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">Loading registered organizations and inspectors…</div>
+          ) : (
+            <form className="grid gap-5" onSubmit={(event) => void createSchedule(event)}>
+              <div className="grid gap-2">
+                <label htmlFor="schedule-organization-search" className="text-sm font-semibold">Organization</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    id="schedule-organization-search"
+                    type="search"
+                    value={organizationQuery}
+                    onChange={(event) => setOrganizationQuery(event.target.value)}
+                    placeholder="Search name, district, or address"
+                    className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm"
+                  />
+                </div>
+                {filteredOrganizations.length > 0 ? (
+                  <ScrollArea className="h-56 rounded-md border">
+                    <RadioGroup value={selectedOrganizationId} onValueChange={setSelectedOrganizationId} className="gap-0 p-1">
+                      {filteredOrganizations.map((organization) => (
+                        <label
+                          key={organization.id}
+                          htmlFor={`schedule-organization-${organization.id}`}
+                          className={`flex cursor-pointer items-start gap-3 rounded-md border-b p-3 last:border-0 hover:bg-muted/60 ${selectedOrganizationId === organization.id ? "bg-info-soft" : ""}`}
+                        >
+                          <RadioGroupItem id={`schedule-organization-${organization.id}`} value={organization.id} className="mt-1" />
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold">{organization.name}</span>
+                            <span className="mt-1 block text-xs text-muted-foreground">{organization.location} · {organization.address}</span>
+                            <span className="mt-1 block text-[11px] text-muted-foreground">
+                              {organization.latitude != null && organization.longitude != null
+                                ? `GPS boundary · ${organization.radius_m ?? "No"} m radius`
+                                : "Site GPS boundary not configured"}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  </ScrollArea>
+                ) : (
+                  <div className="rounded-md border border-dashed p-5 text-center text-sm text-muted-foreground">
+                    {organizations.length === 0 ? "No registered organizations yet. Add one on the Organizations page first." : "No organizations match this search."}
+                  </div>
+                )}
+              </div>
+              <label className="grid gap-2 text-sm font-semibold" htmlFor="schedule-inspector">
+                Assigned inspector
+                <select
+                  id="schedule-inspector"
+                  required
+                  value={selectedInspectorId}
+                  onChange={(event) => setSelectedInspectorId(event.target.value)}
+                  className="h-10 rounded-md border bg-background px-3 text-sm font-normal"
+                  disabled={inspectors.length === 0}
+                >
+                  <option value="" disabled>Select an inspector</option>
+                  {inspectors.map((inspector) => (
+                    <option key={inspector.id} value={inspector.id}>{inspector.name} · {inspector.designation}</option>
+                  ))}
+                </select>
+                {inspectors.length === 0 && <span className="text-xs font-normal text-destructive">No inspectors are available in the registry.</span>}
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2 text-sm font-semibold" htmlFor="schedule-date">
+                  Inspection date
+                  <input id="schedule-date" type="date" required min={localDateInputValue()} value={scheduleSlot.date} onChange={(event) => setScheduleSlot((current) => ({ ...current, date: event.target.value }))} className="h-10 rounded-md border bg-background px-3 text-sm font-normal" />
+                </label>
+                <label className="grid gap-2 text-sm font-semibold" htmlFor="schedule-time">
+                  Inspection time
+                  <input id="schedule-time" type="time" required value={scheduleSlot.time} onChange={(event) => setScheduleSlot((current) => ({ ...current, time: event.target.value }))} className="h-10 rounded-md border bg-background px-3 text-sm font-normal" />
+                </label>
+              </div>
+              {dialogError && <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">{dialogError}</p>}
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={saving || organizations.length === 0 || inspectors.length === 0 || !selectedOrganizationId}>
+                  {saving ? "Creating…" : "Create schedule"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
       <DemoNote />
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Upcoming randomized"
-          value={randomScheduleStats.upcoming}
-          detail={`Across ${randomScheduleStats.districts} districts`}
+          label="Upcoming scheduled"
+          value={upcomingCount}
+          detail="Active assignments stored in SQLite"
           icon={Shuffle}
         />
         <StatCard
-          label="Completed this month"
-          value={randomScheduleStats.completedThisMonth}
-          detail={randomScheduleStats.completionRate}
+          label="Organizations scheduled"
+          value={organizationCount}
+          detail="Registered organizations"
           icon={CheckCircle2}
           toneName="success"
         />
         <StatCard
-          label="Monthly frequency"
-          value={randomScheduleStats.monthlyFrequency}
-          detail="High-attention organizations"
+          label="Assigned inspectors"
+          value={inspectorCount}
+          detail="Active schedule assignments"
           icon={Activity}
         />
         <StatCard
           label="Schedule status"
-          value={randomScheduleStats.status}
-          detail={`Next generation ${randomScheduleStats.nextGeneration}`}
+          value={error ? "Unavailable" : loading ? "Loading" : "Ready"}
+          detail="Backend schedule service"
           icon={CalendarDays}
         />
       </div>
       <Section
-        title="Randomized inspection schedule"
-        description="Exact assignments remain available only to authorized officials."
+        title="Scheduled inspections"
+        description="Assignments are saved with the selected organization’s registered address and site GPS boundary."
       >
+        {error && <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert">{error}</div>}
         <div className="overflow-x-auto rounded-lg border bg-card shadow-card">
-          <table className="w-full min-w-[760px] text-left text-xs">
+          <table className="w-full min-w-[900px] text-left text-xs">
             <thead className="border-b bg-muted/60">
               <tr>
                 {[
                   "Schedule",
                   "Organization",
                   "Assigned inspector",
-                  "Time window",
-                  "Frequency",
+                  "Location",
+                  "Date",
+                  "Time",
+                  "GPS radius",
                   "Status",
                 ].map((x) => (
                   <th
@@ -659,20 +1477,23 @@ export function RandomSchedulePage() {
               </tr>
             </thead>
             <tbody>
-              {randomSchedule.map((x) => (
-                <tr key={x.id} className="border-b last:border-0">
+              {unsubmittedSchedules.map((item) => (
+                <tr key={item.id} className="border-b last:border-0">
                   <td className="px-4 py-4 font-mono font-semibold text-primary">
-                    {x.id}
+                    {item.id}
                   </td>
-                  <td className="px-4 py-4 font-semibold">{x.organization}</td>
-                  <td className="px-4 py-4">{x.inspector}</td>
-                  <td className="px-4 py-4">{x.window}</td>
-                  <td className="px-4 py-4">{x.frequency}</td>
+                  <td className="px-4 py-4 font-semibold">{item.organization}</td>
+                  <td className="px-4 py-4">{item.inspector}</td>
+                  <td className="px-4 py-4">{item.location}</td>
+                  <td className="px-4 py-4">{item.date}</td>
+                  <td className="px-4 py-4">{item.time}</td>
+                  <td className="px-4 py-4">{item.site_radius_m == null ? "Not configured" : `${item.site_radius_m} m`}</td>
                   <td className="px-4 py-4">
-                    <StatusBadge>{x.state}</StatusBadge>
+                    <StatusBadge>{item.status}</StatusBadge>
                   </td>
                 </tr>
               ))}
+              {!loading && unsubmittedSchedules.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No unsubmitted assignments. Create a schedule to assign an inspection.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -844,58 +1665,137 @@ export function OfflineSyncPage() {
 }
 
 export function EvidenceVerificationPage() {
-  const { inspections, mapRadiusM } = usePortalData();
+  const { mapRadiusM, timeline } = usePortalData();
+  const reloadPortalData = useReloadPortalData();
+  const [liveRecords, setLiveRecords] = useState<SubmittedInspection[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = inspections.find((item) => item.id === selectedId) ?? inspections[0];
-  if (!selected) {
-    return <div className="rounded-lg border p-6 text-sm text-muted-foreground">No inspection records are available.</div>;
+  const [liveError, setLiveError] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [reviewingRecord, setReviewingRecord] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function refreshLiveRecords() {
+      try {
+        const response = await fetch(`${inspectorApiBaseUrl}/api/inspections`, { signal: controller.signal });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.detail || `Inspection request failed (${response.status}).`);
+        setLiveRecords(payload as SubmittedInspection[]);
+        setLiveError("");
+      } catch (error) {
+        if (!controller.signal.aborted) setLiveError(error instanceof Error ? error.message : "Could not load submitted inspections.");
+      }
+    }
+    void refreshLiveRecords();
+    const handleResume = () => void refreshLiveRecords();
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("online", handleResume);
+    const timer = window.setInterval(() => void refreshLiveRecords(), 5_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", handleResume);
+      window.removeEventListener("online", handleResume);
+    };
+  }, [refreshToken]);
+
+  const liveInspections: Inspection[] = liveRecords.slice().reverse().map((record) => ({
+    id: record.id,
+    organization: record.organization,
+    organizationId: "",
+    inspector: record.inspector,
+    date: new Date(`${record.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+    time: record.time,
+    scheduledTime: `${record.date} · ${record.time}`,
+    gps: record.location_check_status === "verified" ? "Verified" : record.location_check_status === "outside_radius" ? "Outside radius" : "Pending",
+    photo: record.photo_media_id ? "Captured" : "Pending",
+    status: record.status === "Verified" || record.status === "Flagged" ? record.status : "Submitted",
+    sync: "Synced",
+    duration: "Not recorded",
+    distance: record.location_distance_m == null ? "Not available" : `${record.location_distance_m} m`,
+    coordinates: record.latitude == null || record.longitude == null ? "Not captured" : `${record.latitude.toFixed(5)}° , ${record.longitude.toFixed(5)}°`,
+    evidenceId: record.id,
+    photoMediaId: record.photo_media_id,
+    photoUrl: record.photo_media_id ? `${inspectorApiBaseUrl}/api/media/${encodeURIComponent(record.photo_media_id)}` : null,
+    isLive: Boolean(record.client_submission_id),
+    isPersisted: true,
+  }));
+  const reviewRecords = liveInspections
+    .filter((inspection) => inspection.status === "Submitted" || inspection.status === "Flagged");
+  const selected = reviewRecords.find((item) => item.id === selectedId) ?? reviewRecords[0];
+  const selectedLiveRecord = liveRecords.find((record) => record.id === selected?.id);
+
+  async function updateSelectedReviewStatus(status: "Verified" | "Flagged") {
+    if (!selectedLiveRecord || reviewingRecord) return;
+    setReviewingRecord(true);
+    try {
+      const response = await fetch(`${inspectorApiBaseUrl}/api/inspections/${encodeURIComponent(selectedLiveRecord.id)}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.detail || `Inspection review update failed (${response.status}).`);
+      }
+      setLiveRecords((current) => current.map((record) => record.id === payload.id ? payload as SubmittedInspection : record));
+      reloadPortalData();
+      toast.success(`Inspection ${selectedLiveRecord.id} marked ${status.toLowerCase()}`);
+    } catch (reviewError) {
+      toast.error(reviewError instanceof Error ? reviewError.message : "Could not update the inspection review.");
+    } finally {
+      setReviewingRecord(false);
+    }
   }
+
+  if (!selected) {
+    return <div className="rounded-lg border p-6 text-sm text-muted-foreground">No submitted or flagged inspection records are awaiting review.</div>;
+  }
+
+  const hasLiveCoordinates = selectedLiveRecord?.latitude != null && selectedLiveRecord.longitude != null;
+  const liveLatitude = selectedLiveRecord?.latitude ?? 0;
+  const liveLongitude = selectedLiveRecord?.longitude ?? 0;
+  const liveCapturedAt = selectedLiveRecord?.location_captured_at
+    ? new Date(selectedLiveRecord.location_captured_at).toLocaleString()
+    : "Capture time not recorded";
+  const liveTimeline = selectedLiveRecord ? [
+    ...(selectedLiveRecord.location_captured_at ? [{ title: "GPS position captured", time: liveCapturedAt, detail: selectedLiveRecord.latitude == null || selectedLiveRecord.longitude == null ? "Location timestamp stored" : `${selectedLiveRecord.latitude.toFixed(6)}, ${selectedLiveRecord.longitude.toFixed(6)} · accuracy ±${selectedLiveRecord.location_accuracy_m ?? "unknown"} m` }] : []),
+    ...(selectedLiveRecord.photo_media_id ? [{ title: "Photo evidence attached", time: "Capture time not recorded", detail: "Camera photo stored with inspection" }] : []),
+    { title: "Inspector submission received", time: "Receipt time not recorded", detail: `Record ${selectedLiveRecord.id} is stored in the inspection database` },
+  ] : timeline;
+
   return (
     <>
       <PageHeader
         eyebrow="Authority review workspace"
         title="Evidence Verification"
-        description="Review connected inspection evidence layer by layer before recording an authority decision."
-        actions={<StatusBadge>{selected.status}</StatusBadge>}
+        description="Review sample and live Inspector records with their linked GPS and photo evidence."
+        actions={<div className="flex items-center gap-2"><StatusBadge>{selected.status}</StatusBadge><Button variant="outline" size="sm" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw />Refresh</Button></div>}
       />
+      {liveError && <div className="mb-4 rounded-md border border-warning/30 bg-warning-soft p-3 text-sm" role="status">Live submissions are unavailable: {liveError}</div>}
       <DemoNote />
       <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
         <div className="rounded-lg border bg-card p-3 shadow-card">
-          <p className="px-2 py-2 text-xs font-bold uppercase tracking-[.12em] text-muted-foreground">
-            Review queue
-          </p>
-          {inspections.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setSelectedId(item.id)}
-              className={`mb-1 w-full rounded-md border p-3 text-left transition ${selected.id === item.id ? "border-primary bg-info-soft" : "border-transparent hover:bg-muted"}`}
-            >
-              <div className="flex justify-between gap-2">
-                <span className="font-mono text-[10px] font-bold text-primary">
-                  {item.id}
-                </span>
-                <StatusBadge>{item.status}</StatusBadge>
-              </div>
-              <p className="mt-2 text-xs font-semibold">{item.organization}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {item.inspector} · {item.date}
-              </p>
-            </button>
-          ))}
+          <p className="px-2 py-2 text-xs font-bold uppercase tracking-[.12em] text-muted-foreground">Review queue · submitted and flagged</p>
+          {reviewRecords.map((item) => {
+            const isPersisted = liveRecords.some((record) => record.id === item.id);
+            return (
+              <button key={item.id} onClick={() => setSelectedId(item.id)} className={`mb-1 w-full rounded-md border p-3 text-left transition ${selected.id === item.id ? "border-primary bg-info-soft" : "border-transparent hover:bg-muted"}`}>
+                <div className="flex justify-between gap-2"><span className="font-mono text-[10px] font-bold text-primary">{item.id}</span><StatusBadge>{item.status}</StatusBadge></div>
+                <p className="mt-2 text-xs font-semibold">{item.organization}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{item.inspector} · {item.date}</p>
+                <p className="mt-1 text-[10px] font-semibold text-muted-foreground">{isPersisted ? "Persisted inspection record" : "Sample preview · read-only"}</p>
+              </button>
+            );
+          })}
         </div>
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-5 shadow-card">
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
               <div>
-                <p className="text-xs font-bold uppercase tracking-[.15em] text-success">
-                  Verification status: {selected.status.toUpperCase()}
-                </p>
-                <h2 className="mt-2 font-display text-xl font-bold">
-                  {selected.organization}
-                </h2>
-                <p className="mt-1 font-mono text-xs text-muted-foreground">
-                  {selected.id} · {selected.evidenceId}
-                </p>
+                <p className="text-xs font-bold uppercase tracking-[.15em] text-success">Verification status: {selected.status.toUpperCase()}</p>
+                <h2 className="mt-2 font-display text-xl font-bold">{selected.organization}</h2>
+                <p className="mt-1 font-mono text-xs text-muted-foreground">{selected.id} · {selected.evidenceId}</p>
               </div>
               <ShieldCheck className="size-12 text-success" />
             </div>
@@ -903,51 +1803,35 @@ export function EvidenceVerificationPage() {
           <InspectionEvidenceCard inspection={selected} />
           <div className="grid gap-4 md:grid-cols-2">
             <PhotoViewer image={selected.photoUrl} inspection={selected} />
-            <GPSMap flagged={selected.gps === "Outside radius"} radiusM={mapRadiusM} />
+            {selectedLiveRecord ? (
+              <div className="space-y-3 rounded-lg border bg-card p-4 shadow-card">
+                {hasLiveCoordinates ? <GpsMapFrame latitude={liveLatitude} longitude={liveLongitude} radiusM={mapRadiusM} title={`Inspector GPS location for ${selected.organization}`} /> : <div className="grid h-[260px] place-items-center rounded-md border border-dashed text-sm text-muted-foreground">No captured coordinates</div>}
+                <div className="space-y-2 text-xs"><p><b>Boundary check:</b> {selectedLiveRecord.location_check_status?.replaceAll("_", " ") ?? "Not configured"}</p><p><b>Inspector GPS coordinates:</b> {selected.coordinates}</p><p><b>Accuracy:</b> {selectedLiveRecord.location_accuracy_m == null ? "Not recorded" : `±${selectedLiveRecord.location_accuracy_m} m`}</p><p><b>Distance from registered inspection site:</b> {selectedLiveRecord.location_distance_m == null ? "Not available" : formatSiteDistance(selectedLiveRecord.location_distance_m)}</p></div>
+              </div>
+            ) : <GPSMap flagged={selected.gps === "Outside radius"} radiusM={mapRadiusM} />}
           </div>
           <div className="rounded-lg border bg-card p-5 shadow-card">
             <h3 className="text-sm font-bold">Evidence components</h3>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {[
-                [MapPin, "Location evidence", selected.gps],
-                [
-                  Timer,
-                  "Timestamp recorded",
-                  `${selected.date} · ${selected.time}`,
-                ],
-                [Camera, "Live photo captured", selected.photo],
-                [Cloud, "Inspection record synchronized", selected.sync],
-              ].map(([Icon, label, value]: any) => (
-                <div
-                  key={label}
-                  className="flex items-start gap-3 rounded-md border p-3"
-                >
-                  <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
-                  <div>
-                    <p className="text-xs font-bold">{label}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      {value}
-                    </p>
-                  </div>
-                </div>
+              {[[MapPin, "Location evidence", selected.gps], [Timer, "Timestamp recorded", selectedLiveRecord ? liveCapturedAt : `${selected.date} · ${selected.time}`], [Camera, "Live photo captured", selected.photo], [Cloud, "Inspection record synchronized", selected.sync]].map(([Icon, label, value]: any) => (
+                <div key={label} className="flex items-start gap-3 rounded-md border p-3"><CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" /><div><p className="text-xs font-bold">{label}</p><p className="mt-1 text-[11px] text-muted-foreground">{value}</p></div></div>
               ))}
             </div>
             <div className="mt-5 flex flex-wrap gap-2">
-              <Button
-                onClick={() => toast.success("Inspection marked as verified")}
-              >
-                <CheckCircle2 />
-                Verify evidence
+              <Button disabled={!selectedLiveRecord || reviewingRecord} onClick={() => void updateSelectedReviewStatus("Verified")}>
+                <CheckCircle2 />{reviewingRecord ? "Saving…" : "Verify evidence"}
               </Button>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  toast.warning("Inspection flagged for additional review")
-                }
-              >
-                <AlertTriangle />
-                Flag for review
+              <Button variant="outline" disabled={!selectedLiveRecord || selected.status === "Flagged" || reviewingRecord} onClick={() => void updateSelectedReviewStatus("Flagged")}>
+                <AlertTriangle />Flag for review
               </Button>
+            </div>
+            {!selectedLiveRecord && <p className="mt-2 text-xs text-muted-foreground">This sample preview is not a persisted database record and cannot be changed.</p>}
+          </div>
+          <div className="rounded-lg border bg-card p-5 shadow-card">
+            <h3 className="text-sm font-bold">Evidence timeline</h3>
+            <p className="mt-1 mb-5 text-xs text-muted-foreground">{selectedLiveRecord ? "Timeline entries reflect timestamps stored with this submission." : "Sample demonstration timeline."}</p>
+            <div className="relative ml-2 border-l border-border pl-7">
+              {liveTimeline.map(({ title, time, detail }) => <div key={title} className="relative pb-6 last:pb-0"><span className="absolute -left-[35px] top-0 grid size-4 place-items-center rounded-full bg-success ring-4 ring-success-soft"><CheckCircle2 className="size-2.5 text-primary-foreground" /></span><div className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto]"><div><p className="text-sm font-semibold">{title}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div><time className="text-[11px] font-medium text-muted-foreground">{time}</time></div></div>)}
             </div>
           </div>
         </div>
@@ -957,16 +1841,81 @@ export function EvidenceVerificationPage() {
 }
 
 export function ReportsPage() {
-  const { reports, analytics, organizations, inspections } = usePortalData();
-  const inspectors = [...new Set(inspections.map((item) => item.inspector))];
+  const { organizations, inspections } = usePortalData();
+  const [period, setPeriod] = useState("month");
+  const [organizationFilter, setOrganizationFilter] = useState("");
+  const [inspectorFilter, setInspectorFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const persistedInspections = inspections.filter((item) => item.isPersisted);
+  const inspectors = [...new Set(persistedInspections.map((item) => item.inspector))].sort();
+  const filteredInspections = useMemo(() => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfQuarter = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+    return persistedInspections.filter((item) => {
+      const inspectionDate = item.submittedAt ? new Date(item.submittedAt) : new Date(item.date);
+      if (Number.isNaN(inspectionDate.getTime())) return false;
+      if (inspectionDate > now) return false;
+      if (period === "month" && inspectionDate < startOfMonth) return false;
+      if (period === "quarter" && inspectionDate < startOfQuarter) return false;
+      if (period === "year" && inspectionDate < startOfYear) return false;
+      if (organizationFilter && item.organization !== organizationFilter) return false;
+      if (inspectorFilter && item.inspector !== inspectorFilter) return false;
+      if (statusFilter === "Verified" && item.status !== "Verified") return false;
+      if (statusFilter === "Flagged" && item.status !== "Flagged") return false;
+      if (statusFilter === "Pending" && (item.status === "Verified" || item.status === "Flagged")) return false;
+      return true;
+    });
+  }, [persistedInspections, period, organizationFilter, inspectorFilter, statusFilter]);
+  const reportAnalytics = useMemo(() => {
+    const grouped = new Map<string, { day: string; verified: number; scheduled: number }>();
+    for (const item of filteredInspections) {
+      const date = item.submittedAt ? new Date(item.submittedAt) : new Date(item.date);
+      const key = date.toISOString().slice(0, 10);
+      const day = date.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+      const group = grouped.get(key) ?? { day, verified: 0, scheduled: 0 };
+      if (item.status === "Verified") group.verified += 1;
+      if (item.scheduleId) group.scheduled += 1;
+      grouped.set(key, group);
+    }
+    return [...grouped.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, value]) => value);
+  }, [filteredInspections]);
+  const statusBreakdown = [
+    { name: "Verified", value: filteredInspections.filter((item) => item.status === "Verified").length, color: "var(--success)" },
+    { name: "Pending", value: filteredInspections.filter((item) => item.status !== "Verified" && item.status !== "Flagged").length, color: "var(--warning)" },
+    { name: "Flagged", value: filteredInspections.filter((item) => item.status === "Flagged").length, color: "var(--destructive)" },
+  ];
+  const organizationsInspected = new Set(filteredInspections.map((item) => item.organization)).size;
+  const scheduledInspections = filteredInspections.filter((item) => item.scheduleId).length;
+  const scheduledShare = filteredInspections.length
+    ? `${((scheduledInspections / filteredInspections.length) * 100).toFixed(1)}% of total`
+    : "0% of total";
+  const capturedEvidence = filteredInspections.filter((item) => item.photo === "Captured").length;
   const exportReport = () => {
-    const blob = new Blob(
-      [["Status,Count", ...reports.pie.map((item) => `${item.name},${item.value}`)].join("\n")],
-      { type: "text/csv" },
-    );
+    const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`;
+    const rows = [
+      ["Inspection ID", "Organization", "Inspector", "Date", "Time", "Status", "GPS", "Photo", "Schedule ID", "Submitted at"],
+      ...filteredInspections.map((item) => [
+        item.id,
+        item.organization,
+        item.inspector,
+        item.date,
+        item.time,
+        item.status,
+        item.gps,
+        item.photo,
+        item.scheduleId ?? "",
+        item.submittedAt ?? "",
+      ]),
+    ];
+    const blob = new Blob([rows.map((row) => row.map(escapeCsv).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "satark-drishti-demo-report.csv";
+    a.download = "satark-drishti-inspection-report.csv";
     a.click();
     URL.revokeObjectURL(a.href);
     toast.success("Report exported");
@@ -986,59 +1935,60 @@ export function ReportsPage() {
       />
       <DemoNote />
       <div className="mb-5 grid gap-3 md:grid-cols-4">
-        <select className="h-10 rounded-md border bg-card px-3 text-xs">
-          <option>This month</option>
-          <option>This quarter</option>
+        <select className="h-10 rounded-md border bg-card px-3 text-xs" value={period} onChange={(event) => setPeriod(event.target.value)}>
+          <option value="month">This month</option>
+          <option value="quarter">This quarter</option>
+          <option value="year">This year</option>
+          <option value="all">All time</option>
         </select>
-        <select className="h-10 rounded-md border bg-card px-3 text-xs">
-          <option>All organizations</option>
-          {organizations.map((x) => (
-            <option key={x.id}>{x.name}</option>
+        <select className="h-10 rounded-md border bg-card px-3 text-xs" value={organizationFilter} onChange={(event) => setOrganizationFilter(event.target.value)}>
+          <option value="">All organizations</option>
+          {organizations.map((organization) => (
+            <option key={organization.id} value={organization.name}>{organization.name}</option>
           ))}
         </select>
-        <select className="h-10 rounded-md border bg-card px-3 text-xs">
-          <option>All inspectors</option>
-          {inspectors.map((inspector) => <option key={inspector}>{inspector}</option>)}
+        <select className="h-10 rounded-md border bg-card px-3 text-xs" value={inspectorFilter} onChange={(event) => setInspectorFilter(event.target.value)}>
+          <option value="">All inspectors</option>
+          {inspectors.map((inspector) => <option key={inspector} value={inspector}>{inspector}</option>)}
         </select>
-        <select className="h-10 rounded-md border bg-card px-3 text-xs">
-          <option>All verification states</option>
-          <option>Verified</option>
-          <option>Pending</option>
-          <option>Flagged</option>
+        <select className="h-10 rounded-md border bg-card px-3 text-xs" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="">All verification states</option>
+          <option value="Verified">Verified</option>
+          <option value="Pending">Pending</option>
+          <option value="Flagged">Flagged</option>
         </select>
       </div>
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Total inspections"
-          value={reports.totalInspections}
+          value={filteredInspections.length}
           detail="Selected period"
           icon={FileCheck2}
         />
         <StatCard
           label="Organizations inspected"
-          value={reports.organizationsInspected}
-          detail={reports.coverage}
+          value={organizationsInspected}
+          detail={`${organizations.length ? ((organizationsInspected / organizations.length) * 100).toFixed(1) : "0.0"}% of registered organizations`}
           icon={Building2}
         />
         <StatCard
-          label="Random inspections"
-          value={reports.randomInspections}
-          detail={reports.randomShare}
+          label="Scheduled inspections"
+          value={scheduledInspections}
+          detail={scheduledShare}
           icon={Shuffle}
         />
         <StatCard
-          label="Offline inspections"
-          value={reports.offlineInspections}
-          detail={`${reports.offlineSynchronized} synchronized`}
-          icon={CloudOff}
-          toneName="warning"
+          label="Evidence captured"
+          value={capturedEvidence}
+          detail={`${filteredInspections.filter((item) => item.gps === "Verified").length} GPS verified`}
+          icon={Camera}
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-[1.25fr_.75fr]">
         <div className="h-[360px] rounded-lg border bg-card p-4 shadow-card">
           <p className="text-sm font-bold">Inspection activity</p>
           <ResponsiveContainer width="100%" height="90%">
-            <BarChart data={analytics}>
+            <BarChart data={reportAnalytics}>
               <CartesianGrid stroke="var(--border)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 10 }} axisLine={false} />
               <YAxis tick={{ fontSize: 10 }} axisLine={false} />
@@ -1051,7 +2001,8 @@ export function ReportsPage() {
                 isAnimationActive={false}
               />
               <Bar
-                dataKey="random"
+                dataKey="scheduled"
+                name="Scheduled"
                 fill="var(--primary)"
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={false}
@@ -1064,14 +2015,14 @@ export function ReportsPage() {
           <ResponsiveContainer width="100%" height="90%">
             <PieChart>
               <Pie
-                data={reports.pie}
+                data={statusBreakdown}
                 dataKey="value"
                 nameKey="name"
                 innerRadius={62}
                 outerRadius={95}
                 paddingAngle={4}
               >
-                {reports.pie.map((x) => (
+                {statusBreakdown.map((x) => (
                   <Cell key={x.name} fill={x.color} />
                 ))}
               </Pie>

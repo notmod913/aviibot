@@ -21,9 +21,13 @@ Set `VITE_API_BASE_URL` in `.env` if the backend runs somewhere else. See `.env.
 - Inspection Records
 - Inspection Record Detail
 
-## Intentionally not implemented
+## Inspector workflow
 
-Database/PostgreSQL/PostGIS, camera/live photo capture, GPS capture, offline sync, CCTV/RTSP/MediaMTX/WebRTC, authentication, AI, notifications, analytics, and other Member 4/5/6 work are not included in this module.
+The five route pages in `src/pages/` are mounted by the main application on port `5173` when an Inspector signs in. The flow is Schedule → Inspection Details → On-Site Inspection → Inspection Records → Inspection Record Detail.
+
+On-site inspection captures a photo directly from the browser camera, obtains GPS and accuracy, and submits the evidence to the FastAPI backend. Schedules and unsent inspections use IndexedDB; queued submissions retry when the browser reconnects. GPS boundaries use demo coordinates by default and must be replaced with verified site locations for deployment.
+
+Live CCTV is shown in the Authority portal through MediaMTX WebRTC/WHEP. A real camera source, credentials, and production network/security configuration are not included. Neither browser GPS nor browser camera capture alone provides hardware-backed proof against spoofing.
 
 ## Run
 
@@ -42,4 +46,4 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Then run the portal from `inspector-portal` with `npm run dev`.
+The main project root already mounts these pages at `http://localhost:5173`; no second frontend is required for the integrated workflow. To run this package independently for development, install its dependencies and run `npm run dev` from `inspector-portal` while the root frontend is stopped.

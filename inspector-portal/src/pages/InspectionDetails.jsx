@@ -46,6 +46,8 @@ export default function InspectionDetails() {
           <div><div className="detail-field-label">Status</div><div className="detail-field-value"><StatusBadge status={item.status} /></div></div>
           <div><div className="detail-field-label">Reference ID</div><div className="detail-field-value mono">{item.id}</div></div>
           <div><div className="detail-field-label">Inspector</div><div className="detail-field-value">{item.inspector || inspector.name}</div></div>
+          <div><div className="detail-field-label">Registered GPS boundary</div><div className="detail-field-value">{item.site_radius_m == null ? 'Not configured' : `${item.site_radius_m} m radius`}</div></div>
+          <div><div className="detail-field-label">Site coordinates</div><div className="detail-field-value">{item.site_latitude == null || item.site_longitude == null ? 'Not configured' : `${item.site_latitude.toFixed(6)}, ${item.site_longitude.toFixed(6)}`}</div></div>
         </div>
         <div className="detail-divider" />
         <div className="detail-actions">

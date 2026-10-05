@@ -11,6 +11,7 @@ node_modules
 desktop-app/
 desktop-release/
 release/
+downloadable-app/releases/
 dist
 dist-ssr
 .output
@@ -33,3 +34,21 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python environments, bytecode, and backend-local data
+**/.venv/
+**/venv/
+/backend/**/__pycache__/
+/backend/**/*.pyc
+/backend/.env
+/backend/**/data/
+
+# Agent metadata generated inside the workspace's .kilo directory
+/.kilo/node_modules/
+/.kilo/package.json
+/.kilo/package-lock.json
+/.kilo/pnpm-lock.yaml
+/.kilo/bun.lock
+/.kilo/yarn.lock
+/.kilo/.gitignore
+/.kilo/agent-manager.json

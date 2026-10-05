@@ -8,14 +8,26 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import appCss from "../styles.css?url";
 import inspectorPortalCss from "../../inspector-portal/src/styles/global.css?url";
 import { PortalShell } from "../components/satark/portal";
 import { Toaster } from "../components/ui/sonner";
 import { PortalRoleLoginPage } from "@/components/satark/auth-login";
+import { InspectorCameraCapture, type InspectionScheduleItem, type SubmittedInspection } from "@/components/satark/camera-evidence";
 import { clearStoredSession, getStoredSession } from "@/lib/auth";
+import {
+  cacheSchedules,
+  getCachedSchedules,
+  getPendingInspections,
+  removePendingInspection,
+  type OfflineInspectionSubmission,
+} from "@/lib/offline-inspections";
 import { PortalDataProvider } from "@/lib/portal-data";
+import { InspectorPortalRoutes } from "../../inspector-portal/src/App.jsx";
+
+const INSPECTOR_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
 function NotFoundComponent() {
   return (
@@ -120,17 +132,25 @@ function RootShell({ children }: { children: ReactNode }) {
 }
 
 function InspectorPortalShell() {
-  const [schedule, setSchedule] = useState<Array<{ id: string; organization: string; location: string; date: string; time: string; inspector: string; status: string }>>([]);
-  const [records, setRecords] = useState<Array<{ id: string; organization: string; location: string; date: string; time: string; inspector: string; status: string; notes?: string }>>([]);
+  type InspectorView = "schedule" | "scheduleDetails" | "capture" | "records" | "recordDetail";
+  const [schedule, setSchedule] = useState<Array<InspectionScheduleItem & { status: string }>>([]);
+  const [records, setRecords] = useState<SubmittedInspection[]>([]);
+  const [pendingInspections, setPendingInspections] = useState<OfflineInspectionSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [recordsLoading, setRecordsLoading] = useState(true);
   const [error, setError] = useState("");
   const [recordsError, setRecordsError] = useState("");
-  const [activeView, setActiveView] = useState<"schedule" | "records">("schedule");
+  const [activeView, setActiveView] = useState<InspectorView>("schedule");
+  const [selectedSchedule, setSelectedSchedule] = useState<InspectionScheduleItem | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<SubmittedInspection | null>(null);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [hasHydrated, setHasHydrated] = useState(false);
 
   useEffect(() => {
     setHasHydrated(true);
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/app-sw.js").catch(() => undefined);
+    }
   }, []);
 
   const session = hasHydrated ? getStoredSession() : null;
@@ -150,34 +170,112 @@ function InspectorPortalShell() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadInspectorData() {
       try {
-        const response = await fetch("http://127.0.0.1:8000/api/schedule");
+        const response = await fetch(`${INSPECTOR_API_BASE_URL}/api/schedule`);
         if (!response.ok) throw new Error("Unable to load schedule");
         const payload = await response.json();
-        setSchedule(payload);
+        await cacheSchedules(payload);
+        if (!cancelled) {
+          setSchedule(payload);
+          setError("");
+        }
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Unable to load schedule");
+        const cachedSchedule = await getCachedSchedules().catch(() => []);
+        if (!cancelled) {
+          setSchedule(cachedSchedule);
+          setError(cachedSchedule.length > 0
+            ? "Backend unavailable. Showing the last cached schedule."
+            : loadError instanceof Error ? loadError.message : "Unable to load schedule");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     async function loadInspectionRecords() {
       try {
-        const response = await fetch("http://127.0.0.1:8000/api/inspections");
+        const response = await fetch(`${INSPECTOR_API_BASE_URL}/api/inspections`);
         if (!response.ok) throw new Error("Unable to load inspection records");
         const payload = await response.json();
-        setRecords(payload);
+        if (!cancelled) {
+          setRecords(payload);
+          setRecordsError("");
+        }
       } catch (loadError) {
-        setRecordsError(loadError instanceof Error ? loadError.message : "Unable to load inspection records");
+        if (!cancelled) {
+          setRecordsError(loadError instanceof Error ? loadError.message : "Unable to load inspection records");
+        }
       } finally {
-        setRecordsLoading(false);
+        if (!cancelled) setRecordsLoading(false);
       }
     }
 
+    async function syncPendingInspections() {
+      if (!navigator.onLine) return;
+      const pending = await getPendingInspections().catch(() => []);
+      if (!cancelled) setPendingInspections(pending);
+
+      for (const submission of pending) {
+        if (!navigator.onLine) break;
+        try {
+          const response = await fetch(`${INSPECTOR_API_BASE_URL}/api/inspections`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(submission),
+          });
+          if (!response.ok) break;
+          const record = await response.json() as SubmittedInspection;
+          await removePendingInspection(submission.client_submission_id);
+          if (!cancelled) {
+            setRecords((current) => [record, ...current.filter((item) => item.id !== record.id)]);
+            if (record.schedule_id) {
+              setSchedule((current) => current.map((item) => item.id === record.schedule_id ? { ...item, status: "Completed" } : item));
+            }
+            setPendingInspections((current) => current.filter((item) => item.client_submission_id !== submission.client_submission_id));
+            window.dispatchEvent(new CustomEvent("satark-inspection-synced", { detail: record }));
+          }
+        } catch {
+          break;
+        }
+      }
+
+      const remaining = await getPendingInspections().catch(() => []);
+      if (!cancelled) setPendingInspections(remaining);
+    }
+
+    async function loadPendingInspections() {
+      const pending = await getPendingInspections().catch(() => []);
+      if (!cancelled) setPendingInspections(pending);
+    }
+
+    function handleOnline() {
+      setIsOnline(true);
+      void loadInspectorData();
+      void loadInspectionRecords();
+      void syncPendingInspections();
+    }
+
+    function handleOffline() {
+      setIsOnline(false);
+    }
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
     void loadInspectorData();
     void loadInspectionRecords();
+    void loadPendingInspections();
+    void syncPendingInspections();
+    const retryTimer = window.setInterval(() => void syncPendingInspections(), 15_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(retryTimer);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
   function formatDate(dateValue: string) {
@@ -186,8 +284,11 @@ function InspectorPortalShell() {
   }
 
   const navItems = [
-    { to: "schedule", label: "Inspection Schedule" },
-    { to: "records", label: "Inspection Records" },
+    { to: "schedule", label: "Inspection Schedule", mobileLabel: "Schedule", disabled: false },
+    { to: "scheduleDetails", label: "Inspection Details", mobileLabel: "Details", disabled: !selectedSchedule },
+    { to: "capture", label: "On-site Inspection", mobileLabel: "On-site", disabled: !selectedSchedule },
+    { to: "records", label: "Inspection Records", mobileLabel: "Records", disabled: false },
+    { to: "recordDetail", label: "Inspection Record Detail", mobileLabel: "Record", disabled: !selectedRecord },
   ];
 
   const renderSchedule = () => (
@@ -200,19 +301,24 @@ function InspectorPortalShell() {
 
       <div className="list-panel">
         {loading && <div className="list-empty">Loading schedule…</div>}
-        {!loading && error && (
+        {!loading && error && schedule.length === 0 && (
           <div className="list-empty">
             {error}
             <br />
             <span className="scope-note">Make sure the FastAPI backend is running on port 8000.</span>
           </div>
         )}
+        {!loading && error && schedule.length > 0 && <div className="workflow-banner" role="status">{error}</div>}
         {!loading && !error && schedule.length === 0 && <div className="list-empty">No inspections assigned yet.</div>}
         {!loading && !error && schedule.map((item) => (
           <div key={item.id} className="list-row">
             <div>
               <div className="list-row-org">{item.organization}</div>
               <div className="list-row-sector">{item.location}</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="btn btn-secondary" onClick={() => { setSelectedSchedule(item); setActiveView("scheduleDetails"); }}>View details</button>
+                <button type="button" className="btn btn-primary" disabled={item.status === "Completed"} onClick={() => { setSelectedSchedule(item); setActiveView("capture"); }}>Start inspection</button>
+              </div>
             </div>
             <div className="list-row-date">{formatDate(item.date)}</div>
             <div className="list-row-time">{item.time}</div>
@@ -222,6 +328,35 @@ function InspectorPortalShell() {
       </div>
     </>
   );
+
+  const renderScheduleDetails = () => {
+    if (!selectedSchedule) return renderSchedule();
+    return (
+      <>
+        <button type="button" className="back-link" onClick={() => setActiveView("schedule")}>‹ Back to schedule</button>
+        <div className="page-header">
+          <div className="page-eyebrow">Assigned Inspection · {selectedSchedule.id}</div>
+          <h1 className="page-title">{selectedSchedule.organization}</h1>
+          <p className="page-description">{selectedSchedule.location}</p>
+        </div>
+        <div className="detail-panel">
+          <div className="detail-grid">
+            <div><div className="detail-field-label">Scheduled date</div><div className="detail-field-value">{formatDate(selectedSchedule.date)}</div></div>
+            <div><div className="detail-field-label">Scheduled time</div><div className="detail-field-value">{selectedSchedule.time}</div></div>
+            <div><div className="detail-field-label">Status</div><div className="detail-field-value">{selectedSchedule.status}</div></div>
+            <div><div className="detail-field-label">Assigned inspector</div><div className="detail-field-value">{selectedSchedule.inspector || inspector.name}</div></div>
+            <div><div className="detail-field-label">Registered GPS boundary</div><div className="detail-field-value">{selectedSchedule.site_radius_m == null ? "Not configured" : `${selectedSchedule.site_radius_m} m radius`}</div></div>
+            <div><div className="detail-field-label">Site coordinates</div><div className="detail-field-value">{selectedSchedule.site_latitude == null || selectedSchedule.site_longitude == null ? "Not configured" : `${selectedSchedule.site_latitude.toFixed(6)}, ${selectedSchedule.site_longitude.toFixed(6)}`}</div></div>
+          </div>
+          <div className="detail-divider" />
+          <div className="detail-actions">
+            <button type="button" className="btn btn-primary" disabled={selectedSchedule.status === "Completed"} onClick={() => setActiveView("capture")}>Start on-site inspection</button>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveView("schedule")}>Back to schedule</button>
+          </div>
+        </div>
+      </>
+    );
+  };
 
   const renderRecords = () => (
     <>
@@ -234,21 +369,66 @@ function InspectorPortalShell() {
       <div className="list-panel">
         {recordsLoading && <div className="list-empty">Loading records…</div>}
         {!recordsLoading && recordsError && <div className="list-empty">{recordsError}</div>}
-        {!recordsLoading && !recordsError && records.length === 0 && <div className="list-empty">No inspection records yet.</div>}
+        {!recordsLoading && !recordsError && records.length === 0 && pendingInspections.length === 0 && <div className="list-empty">No inspection records yet.</div>}
         {!recordsLoading && !recordsError && records.map((item) => (
           <div key={item.id} className="list-row">
             <div>
               <div className="list-row-org">{item.organization}</div>
               <div className="list-row-sector">{item.location}</div>
+              <button type="button" className="list-row-action mt-2" onClick={() => { setSelectedRecord(item); setActiveView("recordDetail"); }}>View record details</button>
             </div>
             <div className="list-row-date">{formatDate(item.date)}</div>
             <div className="list-row-time">{item.time}</div>
             <span className="status-badge status-scheduled">{item.status}</span>
           </div>
         ))}
+        {pendingInspections.map((item) => (
+          <div key={item.client_submission_id} className="list-row">
+            <div>
+              <div className="list-row-org">{item.organization}</div>
+              <div className="list-row-sector">Saved on this device · {item.location}</div>
+            </div>
+            <div className="list-row-date">{formatDate(item.date)}</div>
+            <div className="list-row-time">{item.time}</div>
+            <span className="status-badge status-submitted">Pending sync</span>
+          </div>
+        ))}
       </div>
     </>
   );
+
+  const renderRecordDetails = () => {
+    if (!selectedRecord) return renderRecords();
+    const photoUrl = selectedRecord.photo_media_id
+      ? `${INSPECTOR_API_BASE_URL}/api/media/${encodeURIComponent(selectedRecord.photo_media_id)}`
+      : null;
+    return (
+      <>
+        <button type="button" className="back-link" onClick={() => setActiveView("records")}>‹ Back to records</button>
+        <div className="page-header">
+          <div className="page-eyebrow">Inspection Record · {selectedRecord.id}</div>
+          <h1 className="page-title">{selectedRecord.organization}</h1>
+          <p className="page-description">{selectedRecord.location}</p>
+        </div>
+        <div className="detail-panel">
+          <div className="detail-grid">
+            <div><div className="detail-field-label">Inspection date</div><div className="detail-field-value">{formatDate(selectedRecord.date)}</div></div>
+            <div><div className="detail-field-label">Inspection time</div><div className="detail-field-value">{selectedRecord.time}</div></div>
+            <div><div className="detail-field-label">Status</div><div className="detail-field-value">{selectedRecord.status}</div></div>
+            <div><div className="detail-field-label">Inspector</div><div className="detail-field-value">{selectedRecord.inspector}</div></div>
+            <div><div className="detail-field-label">GPS check</div><div className="detail-field-value">{selectedRecord.location_check_status?.replaceAll("_", " ") ?? "Not configured"}</div></div>
+            <div><div className="detail-field-label">Coordinates / accuracy</div><div className="detail-field-value">{selectedRecord.latitude == null || selectedRecord.longitude == null ? "Not captured" : `${selectedRecord.latitude.toFixed(6)}, ${selectedRecord.longitude.toFixed(6)} · ±${selectedRecord.location_accuracy_m ?? "?"} m`}</div></div>
+          </div>
+          {selectedRecord.notes && <><div className="detail-divider" /><div className="detail-field-label">Inspection notes</div><p className="mt-2 text-sm">{selectedRecord.notes}</p></>}
+          <div className="detail-divider" />
+          <div className="detail-field-label">Live photo evidence</div>
+          {photoUrl
+            ? <img src={photoUrl} alt={`Inspection evidence for ${selectedRecord.organization}`} className="mt-3 max-h-[480px] w-full rounded-md border bg-black object-contain" />
+            : <p className="mt-2 text-sm text-muted-foreground">No photo was attached to this record.</p>}
+        </div>
+      </>
+    );
+  };
 
   return (
     <div className="app-shell">
@@ -263,7 +443,8 @@ function InspectorPortalShell() {
             <button
               key={item.to}
               type="button"
-              onClick={() => setActiveView(item.to as "schedule" | "records")}
+              disabled={item.disabled}
+              onClick={() => setActiveView(item.to)}
               className={item.to === activeView ? "sidebar-nav-link active" : "sidebar-nav-link"}
             >
               {item.label}
@@ -297,10 +478,11 @@ function InspectorPortalShell() {
           <button
             key={item.to}
             type="button"
-            onClick={() => setActiveView(item.to as "schedule" | "records")}
+            disabled={item.disabled}
+            onClick={() => setActiveView(item.to)}
             className={item.to === activeView ? "mobile-nav-link active" : "mobile-nav-link"}
           >
-            {item.label}
+            {item.mobileLabel}
           </button>
         ))}
       </nav>
@@ -315,7 +497,39 @@ function InspectorPortalShell() {
         </header>
 
         <main className="app-content">
-          {activeView === "schedule" ? renderSchedule() : renderRecords()}
+          {(!isOnline || pendingInspections.length > 0) && (
+            <div className="mb-4 rounded-md border border-warning/30 bg-warning-soft p-3 text-sm" role="status">
+              {!isOnline ? "Offline mode: cached assignments are available. " : ""}
+              {pendingInspections.length > 0
+                ? `${pendingInspections.length} inspection${pendingInspections.length === 1 ? "" : "s"} queued for automatic sync.`
+                : "New captures will be saved on this device until you reconnect."}
+            </div>
+          )}
+          {activeView === "capture" && selectedSchedule ? (
+            <InspectorCameraCapture
+              item={selectedSchedule}
+              inspector={inspector.name}
+              onCancel={() => setActiveView("scheduleDetails")}
+              onQueued={(submission) => setPendingInspections((current) => [
+                submission,
+                ...current.filter((item) => item.client_submission_id !== submission.client_submission_id),
+              ])}
+              onSubmitted={(record) => {
+                setRecords((current) => [record, ...current.filter((item) => item.id !== record.id)]);
+                if (record.schedule_id) {
+                  setSchedule((current) => current.map((item) => item.id === record.schedule_id ? { ...item, status: "Completed" } : item));
+                }
+                setPendingInspections((current) => current.filter((item) => item.client_submission_id !== record.client_submission_id));
+                setRecordsError("");
+                setRecordsLoading(false);
+                setSelectedRecord(record);
+                setSelectedSchedule(null);
+                setActiveView("recordDetail");
+              }}
+            />
+          ) : activeView === "scheduleDetails" ? renderScheduleDetails()
+            : activeView === "recordDetail" ? renderRecordDetails()
+              : activeView === "schedule" ? renderSchedule() : renderRecords()}
         </main>
       </div>
     </div>
@@ -328,6 +542,9 @@ function RootComponent() {
 
   useEffect(() => {
     setHasHydrated(true);
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/app-sw.js").catch(() => undefined);
+    }
   }, []);
 
   const session = hasHydrated ? getStoredSession() : null;
@@ -350,7 +567,9 @@ function RootComponent() {
   if (session.role === "inspector") {
     return (
       <QueryClientProvider client={queryClient}>
-        <InspectorPortalShell />
+        <MemoryRouter initialEntries={["/schedule"]}>
+          <InspectorPortalRoutes inspectorName={session.displayName} />
+        </MemoryRouter>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>
     );

@@ -1,20 +1,28 @@
-# Feature Integration Notes
+# Camera and Evidence Integration
 
-## Inspector location and offline queue
+## Inspector capture
 
-- The Inspector Portal reads device location from the browser Geolocation API. Serve it from `localhost` or HTTPS and grant location permission.
-- The inspection form sends `schedule_id`, `latitude`, `longitude`, `location_accuracy_m`, and `location_captured_at` to `POST /api/inspections`.
-- The backend's development CORS defaults allow the dashboard on port 5173 and inspector portal on port 5174.
-- Configure real registered sites in `backend/.env` with `SITE_LOCATIONS_JSON`. Keys must exactly match the organization names in the schedule. Each value has `latitude`, `longitude`, and `radius_m`.
-- The backend calculates distance and the radius result. A missing target location returns `location_verified: null`. Browser geolocation is not tamper-proof.
-- IndexedDB caches schedules and stores queued inspections. On reconnect, submissions retry with a stable `client_submission_id`. The current backend de-duplicates only within one process lifetime; persist this key with a database unique constraint before production use.
-- API and schedule storage are still in memory. A backend restart discards submitted records and resets the in-memory idempotency index.
+The Inspector role is available from the main frontend on port `5173`. Choose a scheduled visit, select **Start inspection**, then capture a photo and GPS position from the browser. Camera and geolocation permissions are required; browser access works on `localhost` or HTTPS.
 
-## Authority live monitoring
+Schedules are cached in IndexedDB. If the backend is unavailable, the Inspector can still capture evidence; photo, coordinates, notes, and a stable retry ID are saved locally. The app retries queued submissions on reconnect, app startup, and periodically while open. Submitted JPEG/PNG/WebP images and inspection details are stored in SQLite; images are served at `/api/media/{photo_media_id}`. Existing databases migrate schedule boundaries and evidence references on startup.
 
-1. Start MediaMTX and publish/ingest the source stream there. RTSP is an ingest/source protocol; the browser viewer uses WebRTC over MediaMTX WHEP.
-2. Copy the root `.env.example` to `.env` and set `VITE_LIVE_STREAMS` to a JSON array. Each item has `name`, `organization`, and `whepUrl`, for example `http://localhost:8889/entrance/whep`.
-3. Allow the dashboard origin in MediaMTX CORS settings and configure WebRTC ICE hosts/ports so the browser can reach the stream. Use HTTPS for deployed dashboards and WHEP endpoints.
-4. Restart Vite after changing `.env`. The `/live-monitoring` route opens configured streams and reports connection failures.
+Authority users can review submitted photos and GPS data on **Evidence Verification**. Geofence checks use the schedule's registered coordinates and radius. Demo coordinates and organizations are fictional examples; replace them with verified site registry data. Browser GPS and browser camera access are not tamper-proof.
 
-This repository does not provision MediaMTX, CCTV credentials, TLS, access control, or network/firewall rules. Configure those at the deployment boundary. Camera capture from the inspector device is intentionally not included.
+## Authority CCTV / WebRTC
+
+Larix Broadcaster can publish RTMP to MediaMTX, and browser playback uses MediaMTX WHEP over WebRTC. The Authority **Live Monitoring** page includes a default `live/entrance` viewer and accepts additional WHEP endpoint settings stored in that browser.
+
+The local MediaMTX configuration is `camera/mediamtx.yml`. RTMP ingest and WebRTC signaling/media bind to network interfaces so a phone on the same private Wi-Fi can reach the PC. RTSP remains loopback-only. Larix needs both an application and a stream name: configure RTMP server `rtmp://<PC-LAN-IP>:1935/live` and stream name/key `entrance` (full URL: `rtmp://<PC-LAN-IP>:1935/live/entrance`). Find the PC IPv4 address with `ipconfig`. Start the whole project with `npm run start:all`, allow MediaMTX through Windows Firewall on **Private networks** if prompted, then start broadcasting in Larix. Open the dashboard at `http://localhost:5173/live-monitoring` on the PC and click **Reconnect** if Larix was started after the page; the viewer uses `http://localhost:8889/live/entrance/whep`.
+
+- Larix RTMP ingest: TCP `1935`
+- WHEP signaling: HTTP `8889`
+- WebRTC media: UDP `8189`
+- Optional RTSP ingest: TCP `8554` (loopback only)
+
+Run a MediaMTX Windows binary with this config from the project root:
+
+```powershell
+& "$env:LOCALAPPDATA\SatarkDrishti\MediaMTX-v1.21.1\mediamtx.exe" ".\camera\mediamtx.yml"
+```
+
+The MediaMTX executable is not committed to the repository. This configuration does not create camera footage: Larix (or another authorized source) must publish to MediaMTX before video appears. RTMP is unauthenticated in this local demo configuration; use only a trusted private network and never port-forward these ports or expose them to the internet. Production requires publisher/viewer authentication, TLS, origin restrictions, firewall rules, and appropriate ICE/TURN settings.

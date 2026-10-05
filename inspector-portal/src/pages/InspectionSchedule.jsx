@@ -12,13 +12,40 @@ export default function InspectionSchedule() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
-    fetchSchedule()
-      .then(setItems)
-      .catch((err) => setError(err.message || 'Could not load the inspection schedule.'))
-      .finally(() => setLoading(false));
-  }, []);
+    let active = true;
+    let loadingSchedule = false;
+    async function loadSchedule() {
+      if (loadingSchedule) return;
+      loadingSchedule = true;
+      setLoading(true);
+      try {
+        const schedule = await fetchSchedule();
+        if (active) {
+          setItems(schedule.filter((item) => item.status !== 'Completed'));
+          setError('');
+        }
+      } catch (err) {
+        if (active) setError(err.message || 'Could not load the inspection schedule.');
+      } finally {
+        loadingSchedule = false;
+        if (active) setLoading(false);
+      }
+    }
+    const refreshOnFocus = () => void loadSchedule();
+    void loadSchedule();
+    const timer = window.setInterval(() => void loadSchedule(), 5000);
+    window.addEventListener('focus', refreshOnFocus);
+    window.addEventListener('online', refreshOnFocus);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshOnFocus);
+      window.removeEventListener('online', refreshOnFocus);
+    };
+  }, [refreshKey]);
 
   return (
     <>
@@ -26,6 +53,9 @@ export default function InspectionSchedule() {
         <div className="page-eyebrow">Inspector Portal</div>
         <h1 className="page-title">Inspection Schedule</h1>
         <p className="page-description">Inspections assigned to you by the Satark Drishti backend.</p>
+        <button type="button" className="btn btn-secondary" onClick={() => setRefreshKey((value) => value + 1)} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Refresh schedule'}
+        </button>
       </div>
 
       <div className="list-panel">

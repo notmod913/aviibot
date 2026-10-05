@@ -6,9 +6,17 @@ inspector but not necessarily carried out yet. Records are persisted in
 SQLite by the schedule service.
 """
 
+from datetime import date, time
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ScheduleCreate(BaseModel):
+    organization_id: str = Field(min_length=1, max_length=100)
+    inspector_id: int = Field(ge=1)
+    date: date
+    time: time
 
 
 class ScheduleItem(BaseModel):

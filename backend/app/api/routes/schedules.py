@@ -1,13 +1,8 @@
-"""
-Inspection schedule API.
+"""Inspection schedule API."""
 
-Schedules are persisted in SQLite. `POST /schedule/generate` creates random
-demo entries; this is a data generator, not a real scheduling algorithm.
-"""
+from fastapi import APIRouter, HTTPException, Query
 
-from fastapi import APIRouter, Query
-
-from app.schemas.schedule import ScheduleItem
+from app.schemas.schedule import ScheduleCreate, ScheduleItem
 from app.services import schedule_service
 
 router = APIRouter(tags=["Schedule"])
@@ -15,8 +10,19 @@ router = APIRouter(tags=["Schedule"])
 
 @router.get("/schedule", response_model=list[ScheduleItem])
 def list_schedule():
-    """Return all demo inspection schedule entries."""
+    """Return all persisted inspection schedules."""
     return schedule_service.get_all_schedules()
+
+
+@router.post("/schedule", response_model=ScheduleItem, status_code=201)
+def create_schedule(payload: ScheduleCreate):
+    """Create an assignment for a registered organization and inspector."""
+    try:
+        return schedule_service.create_scheduled_inspection(payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.post("/schedule/generate", response_model=list[ScheduleItem])

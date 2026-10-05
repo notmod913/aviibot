@@ -1,0 +1,32 @@
+logLevel: info
+logDestinations: [stdout]
+
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtmp: true
+rtmpAddress: :1935
+hls: false
+srt: false
+moq: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins:
+  - http://localhost:5173
+  - http://127.0.0.1:5173
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ""
+webrtcIPsFromInterfaces: true
+webrtcAdditionalHosts:
+  - 127.0.0.1
+
+paths:
+  # If the camera serves an RTSP stream, set source to its real URL and
+  # enable sourceOnDemand. Keep credentials in a local, uncommitted config.
+  # source: rtsp://USERNAME:PASSWORD@CAMERA_IP:554/VENDOR_STREAM_PATH
+  # sourceOnDemand: true
+  entrance:
+    source: publisher
+  all_others:
+    source: publisher

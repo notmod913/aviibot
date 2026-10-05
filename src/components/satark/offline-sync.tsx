@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { PageHeader, StatusBadge } from "@/components/satark/portal";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { getPendingInspections, type OfflineInspectionSubmission } from "@/lib/offline-inspections";
 
 type InspectionRecord = {
   id: string;
@@ -17,13 +18,20 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
 
 export function OfflineSyncPage() {
   const [records, setRecords] = useState<InspectionRecord[]>([]);
+  const [pendingInspections, setPendingInspections] = useState<OfflineInspectionSubmission[]>([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
+  async function refreshPendingInspections() {
+    const pending = await getPendingInspections().catch(() => []);
+    setPendingInspections(pending);
+  }
+
   async function refreshRecords() {
+    await refreshPendingInspections();
     if (!navigator.onLine) {
       setIsOnline(false);
       setApiReachable(false);
@@ -84,11 +92,11 @@ export function OfflineSyncPage() {
           <div className="mt-2"><StatusBadge>{apiReachable === null ? "Checking" : apiReachable ? "Reachable" : "Unavailable"}</StatusBadge></div>
         </div>
         <div className="rounded-lg border bg-card p-4">
-          <p className="text-xs text-muted-foreground">Records accepted by API</p>
-          <p className="mt-2 text-xl font-bold tabular-nums">{records.length}</p>
+          <p className="text-xs text-muted-foreground">Queued on this device</p>
+          <p className="mt-2 text-xl font-bold tabular-nums">{pendingInspections.length}</p>
         </div>
       </div>
-      <p className="mb-4 text-sm text-muted-foreground">Inspections waiting offline remain on the inspector’s device and appear here after the API accepts them. The current backend stores accepted records in memory.</p>
+      <p className="mb-4 text-sm text-muted-foreground">Unsent inspections remain in this browser’s IndexedDB queue and retry automatically when online. Accepted records and photo evidence persist in the backend’s SQLite database.</p>
       {error && <div className="mb-4 rounded-md border border-warning/40 bg-warning-soft p-3 text-sm" role="status">{error}</div>}
       {lastUpdated && <p className="mb-3 text-xs text-muted-foreground">Last refreshed {lastUpdated.toLocaleTimeString()}</p>}
       <div className="overflow-hidden rounded-lg border bg-card">
@@ -107,7 +115,16 @@ export function OfflineSyncPage() {
                   <td className="px-4 py-3">{record.location_check_status?.replaceAll("_", " ") ?? (record.latitude != null && record.longitude != null ? "not configured" : "not captured")}</td>
                 </tr>
               ))}
-              {!loading && records.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">{apiReachable ? "No inspections have been accepted yet." : "Inspection records are unavailable while the API is offline."}</td></tr>}
+              {pendingInspections.map((record) => (
+                <tr key={record.client_submission_id} className="border-b last:border-0 bg-warning-soft/40">
+                  <td className="px-4 py-3 font-mono text-xs">Pending sync</td>
+                  <td className="px-4 py-3">{record.organization}</td>
+                  <td className="px-4 py-3">{record.inspector}</td>
+                  <td className="px-4 py-3">{record.date}</td>
+                  <td className="px-4 py-3">{record.latitude.toFixed(5)}, {record.longitude.toFixed(5)}</td>
+                </tr>
+              ))}
+              {!loading && records.length === 0 && pendingInspections.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">{apiReachable ? "No inspections have been accepted or queued yet." : "Inspection records are unavailable while the API is offline."}</td></tr>}
             </tbody>
           </table>
         </div>

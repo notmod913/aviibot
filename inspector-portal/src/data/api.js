@@ -1,3 +1,5 @@
+import { cacheSchedules, getCachedSchedules } from './offlineQueue';
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 async function request(path, options = {}) {
@@ -20,8 +22,16 @@ async function request(path, options = {}) {
   return response.json();
 }
 
-export function fetchSchedule() {
-  return request('/api/schedule');
+export async function fetchSchedule() {
+  try {
+    const schedules = await request('/api/schedule');
+    await cacheSchedules(schedules).catch(() => {});
+    return schedules;
+  } catch (error) {
+    const cachedSchedules = await getCachedSchedules().catch(() => []);
+    if (cachedSchedules.length > 0) return cachedSchedules;
+    throw error;
+  }
 }
 
 export function fetchScheduleItem(id) {

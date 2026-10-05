@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satark Drishti — Field Evidence</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Satark Drishti</h1>
+  <p>Field Evidence Capture</p>
+
+  <form>
+    <label for="description">What did you inspect?</label>
+    <input id="description" name="description" type="text" required>
+
+    <label>Live inspection photo</label>
+
+<video id="cameraPreview" autoplay playsinline hidden></video>
+<canvas id="photoCanvas" hidden></canvas>
+
+<div class="camera-controls">
+  <button id="openCamera" type="button">Open camera</button>
+  <button id="capturePhoto" type="button" disabled>Take photo</button>
+  <button id="closeCamera" type="button" disabled>Close camera</button>
+</div>
+
+<img id="photoPreview" alt="Captured inspection photo" hidden>
+<p id="cameraStatus">Camera is closed. Open it to take a live photo.</p>
+
+    <label for="getLocation">Location</label>
+    <button id="getLocation" type="button">Get my location</button>
+    <p id="locationResult">Location not captured yet</p>
+    <p id="saveResult"></p>
+    <button type="submit">Save evidence</button>
+  </form>
+  <section id="saved-section">
+  <h2>Saved evidence on this device</h2>
+  <div id="savedRecords">Loading saved evidence...</div>
+  </section>
+  <script src="app.js"></script>
+</body>
+</html>

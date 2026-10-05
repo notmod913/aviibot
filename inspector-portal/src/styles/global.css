@@ -19,9 +19,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-h1,
-h2,
-h3 {
+.app-shell h1,
+.app-shell h2,
+.app-shell h3 {
   margin: 0;
   font-weight: 600;
   color: var(--color-ink);
@@ -39,7 +39,7 @@ select {
   font-size: inherit;
 }
 
-a {
+.app-shell a {
   color: inherit;
 }
 
@@ -123,6 +123,12 @@ button.mobile-nav-link {
   border-left-color: #ffffff;
 }
 
+.sidebar-nav-link:disabled,
+.mobile-nav-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 16px 20px;
@@ -196,6 +202,25 @@ button.mobile-nav-link {
 
 .page-header {
   margin-bottom: 22px;
+}
+
+.records-status-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--color-ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.records-status-filter select {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink);
 }
 
 .page-eyebrow {

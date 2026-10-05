@@ -7,7 +7,7 @@ replace the storage later without changing this API contract.
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.schemas.inspection import Inspection, InspectionCreate
+from app.schemas.inspection import Inspection, InspectionCreate, InspectionReviewStatus
 from app.services import inspection_service
 
 router = APIRouter(tags=["Inspections"])
@@ -32,3 +32,23 @@ def get_inspection(inspection_id: str):
 def create_inspection(payload: InspectionCreate):
     """Create a new demo inspection record and return it with its id."""
     return inspection_service.create_inspection(payload)
+
+
+@router.delete("/inspections/{inspection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_inspection(inspection_id: str):
+    """Delete an inspection and keep seeded records from being recreated."""
+    deleted = inspection_service.delete_inspection(inspection_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+
+@router.put("/inspections/{inspection_id}/status", response_model=Inspection)
+def update_inspection_status(inspection_id: str, payload: InspectionReviewStatus):
+    """Persist an Authority review decision for an inspection record."""
+    record = inspection_service.update_review_status(inspection_id, payload.status)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Inspection not found",
+        )
+    return record

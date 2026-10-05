@@ -69,18 +69,52 @@ All routes are mounted under `/api`.
 | GET    | `/api/inspections/{id}`  | Get one demo inspection (Bearer token required) |
 | POST   | `/api/inspections`       | Create a demo inspection (Bearer token required)|
 
+`POST /api/schedule` creates a persisted assignment from a registered
+organization ID, inspector ID, date, and time. The organization’s registered
+address and GPS boundary are copied to the schedule. Schedules cannot be
+created for past date/time slots or when that inspector already has an active
+assignment at the selected time. `POST /api/schedule/generate` remains available
+for legacy/demo randomized assignments.
+
+Authority review actions persist with `PUT /api/inspections/{id}/status`
+(`Verified` or `Flagged`), and any persisted inspection can be deleted with
+`DELETE /api/inspections/{id}`. Deletion tombstones prevent seeded records from
+being recreated at the next backend startup.
+
 Interactive Swagger documentation is available at **`/docs`** outside
 production. It is disabled when `APP_ENV=production`.
+
+The organization registry API includes `GET /api/organizations`,
+`GET /api/organizations/{id}`, and `POST /api/organizations`. Registration IDs
+are generated uniquely by the backend; organization creation requests only
+provide organization and site details. New entries start as `Pending`.
+Authority review updates with `PUT /api/organizations/{id}/status` accept
+`Verified` or `Flagged`; `DELETE /api/organizations/{id}` removes the registry
+entry while preserving linked inspection and schedule history. New entries
+and their site boundaries are stored in SQLite and are available to live
+schedule creation.
+
+`GET /api/location/reverse?latitude=...&longitude=...` uses OpenStreetMap
+Nominatim to look up a nearby mapped street or place and locality. Coordinates
+are rounded to five decimal places before lookup, and successful results are
+cached in SQLite with requests rate-limited to Nominatim's public-service policy.
+Captured coordinates are sent to the public Nominatim service for this lookup.
+The address is approximate map data and is displayed separately from the
+organization's registered location.
 
 ## Demo data notice
 
 The backend creates `data/satark.sqlite3` on first startup and seeds three
-inspectors, two schedules, one inspector inspection, five authority organizations,
-five authority dashboard inspection records, chart/report data, timeline events,
-camera status, and one evidence image BLOB. The authority payload is served by
+inspectors, two schedules, five primary inspection/evidence examples, 30 fictional
+historical inspection records for populated charts, eleven fictional organizations
+across the authority registry and scheduled field sites, chart/report data, timeline
+events, camera status, and one evidence image BLOB. The authority payload is served by
 `/api/portal-data`; inspector schedules and inspection records use their normal
-endpoints. Generated schedules and submitted inspections persist across restarts.
-All seeded records are fictional demo data, not real government or NGO information.
+endpoints. Authority charts and report summaries are derived from the same
+persisted inspection collection. Generated schedules and submitted inspections
+persist across restarts. Deleted inspection IDs are tombstoned so seeded rows
+stay deleted. All seeded records are fictional demo data, not real government or
+NGO information.
 
 ## How to run
 
@@ -164,18 +198,21 @@ Invoke-RestMethod http://127.0.0.1:8000/api/schedule -Headers @{
 ## GPS boundary checks
 
 The Inspector Portal captures browser-provided coordinates and sends them
-with the inspection submission. To enable a server-side distance check,
-set `SITE_LOCATIONS_JSON` in `.env` to a JSON object keyed by the exact
-organization name. For example:
+with the inspection submission. Seeded demo schedules include fictional
+site coordinates and a 100 m radius so the boundary check can be demonstrated
+locally. Replace them with verified site coordinates in `SITE_LOCATIONS_JSON`
+for deployment; keys must match the organization names exactly. For example:
 
 ```dotenv
 SITE_LOCATIONS_JSON={"Asha Bal Vikas Sanstha":{"latitude":18.5074,"longitude":73.8077,"radius_m":100}}
 ```
 
-Replace the example coordinates with verified site coordinates. The API
-returns `location_distance_m` and `location_verified` when a configured
-site, schedule, and coordinate pair are available; otherwise the result
-is `null`. This is a proximity calculation, not proof against GPS spoofing.
+Replace the example coordinates with verified site coordinates. Environment
+values override the demo schedule coordinates. The API returns
+`location_distance_m`, `location_verified`, and a check status when a
+configured site, schedule, and coordinate pair are available. This is a
+proximity calculation, not proof against GPS spoofing; browser location and
+camera data can be manipulated on unmanaged devices.
 The browser must be served from HTTPS or localhost for geolocation access.
 
 Inspection submissions accept `schedule_id`, `latitude`, `longitude`,
@@ -188,18 +225,20 @@ so retried submissions return the existing record across server restarts.
 The following still require separate implementation or deployment:
 
 - PostgreSQL / PostGIS production migration (Member 4's responsibility)
-- User accounts, password hashing/reset, and role-based authorization
-- Camera or photo capture
-- CCTV/RTSP ingestion, MediaMTX server provisioning, and stream security
+- Production identity provider, password reset, and role-based API authorization
+- Verified NGO/organization registry integration
+- CCTV source provisioning, production MediaMTX security, TLS, and network rules
+- Hardware-backed camera/GPS attestation; browser permissions alone cannot prove capture authenticity
 - AI/ML features
 - Notifications
 - Analytics or reports
 
-The Inspector Portal includes IndexedDB schedule caching and an offline
-inspection submission queue. The queue retries through `POST
-/api/inspections` when connectivity returns. The authority dashboard can
-display MediaMTX WebRTC streams when configured; streaming is not served
-by this FastAPI backend.
+The main Inspector flow caches schedules and queues photo/GPS submissions in
+IndexedDB, then retries through `POST /api/inspections` when connectivity
+returns. The Authority dashboard can display MediaMTX WebRTC streams when a
+source is configured; streaming is not served by this FastAPI backend. All
+seeded organizations, sites, schedules, inspections, and evidence are
+fictional demonstration data.
 
 The service layer (`app/services/`) is deliberately isolated from the
 route layer so the SQLite implementation can later be replaced with

@@ -36,6 +36,7 @@ import {
   Crosshair,
   Download,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -57,7 +58,7 @@ const nav = [
   ["/", "Dashboard", Gauge],
   ["/organizations", "Organizations", Building2],
   ["/inspections", "Inspections", FileCheck2],
-  ["/random-schedule", "Random Schedule", Shuffle],
+  ["/random-schedule", "Inspection Scheduling", CalendarClock],
   ["/live-monitoring", "Live Monitoring", Radio],
   ["/inspection-records", "Inspection Records", Database],
   ["/evidence-verification", "Evidence Verification", ShieldCheck],
@@ -332,8 +333,7 @@ export function DemoNote() {
   return (
     <div className="mb-5 flex items-center gap-2 rounded-md border border-info/20 bg-info-soft px-3 py-2 text-xs text-info">
       <Database className="size-4 shrink-0" />
-      Demonstration environment · All records, people, locations and coordinates
-      are fictional.
+      Demonstration environment · Seeded samples are fictional; Inspector submissions show captured record data.
     </div>
   );
 }
@@ -345,6 +345,8 @@ const tone: Record<string, string> = {
   Pending: "warning",
   Flagged: "danger",
   "Outside radius": "danger",
+  Scheduled: "info",
+  "Not submitted": "neutral",
   "Offline Sync Pending": "warning",
   Failed: "danger",
   Online: "success",
@@ -488,9 +490,13 @@ export function InspectionEvidenceCard({
 export function InspectionTable({
   rows,
   limit,
+  onDeleteRecord,
+  onViewRecord,
 }: {
   rows: Inspection[];
   limit?: number;
+  onDeleteRecord?: (record: Inspection) => void;
+  onViewRecord?: (inspectionId: string) => void;
 }) {
   const shown = limit ? rows.slice(0, limit) : rows;
   return (
@@ -546,15 +552,39 @@ export function InspectionTable({
                   <StatusBadge>{row.sync}</StatusBadge>
                 </td>
                 <td className="px-4 py-4">
-                  <Button variant="outline" size="sm" asChild>
-                    <Link
-                      to="/inspections/$inspectionId"
-                      params={{ inspectionId: row.id }}
-                    >
-                      View details
-                      <ChevronRight />
-                    </Link>
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {row.isScheduleOnly ? (
+                      <Button variant="outline" size="sm" disabled>
+                        Awaiting report
+                      </Button>
+                    ) : onViewRecord ? (
+                      <Button variant="outline" size="sm" onClick={() => onViewRecord(row.id)}>
+                        View details
+                        <ChevronRight />
+                      </Button>
+                    ) : (
+                      <Button variant="outline" size="sm" asChild>
+                        <Link
+                          to="/inspections/$inspectionId"
+                          params={{ inspectionId: row.id }}
+                        >
+                          View details
+                          <ChevronRight />
+                        </Link>
+                      </Button>
+                    )}
+                    {row.isPersisted && onDeleteRecord && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => onDeleteRecord(row)}
+                        aria-label={`Delete inspection ${row.id}`}
+                      >
+                        <Trash2 />
+                        Delete
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

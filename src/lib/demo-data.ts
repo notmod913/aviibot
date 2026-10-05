@@ -1,10 +1,11 @@
-export type Status = "Verified" | "Pending" | "Flagged";
-export type SyncStatus = "Synced" | "Offline Sync Pending" | "Failed";
+export type Status = "Verified" | "Pending" | "Flagged" | "Submitted" | "Scheduled";
+export type SyncStatus = "Synced" | "Offline Sync Pending" | "Failed" | "Not submitted";
 
 export type Inspection = {
   id: string;
   organization: string;
   organizationId: string;
+  location?: string;
   inspector: string;
   date: string;
   time: string;
@@ -19,5 +20,15 @@ export type Inspection = {
   evidenceId: string;
   photoMediaId?: string | null;
   photoUrl?: string | null;
+  isLive?: boolean;
+  isPersisted?: boolean;
+  isScheduleOnly?: boolean;
+  scheduleId?: string | null;
+  locationCapturedAt?: string | null;
+  photoCapturedAt?: string | null;
+  submittedAt?: string | null;
+  locationAccuracyM?: number | null;
+  locationDistanceM?: number | null;
+  locationCheckStatus?: string | null;
+  notes?: string | null;
 };
-

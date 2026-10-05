@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout';
 import InspectionSchedule from './pages/InspectionSchedule';
 import InspectionDetails from './pages/InspectionDetails';
@@ -6,10 +6,10 @@ import OnSiteInspection from './pages/OnSiteInspection';
 import InspectionRecords from './pages/InspectionRecords';
 import InspectionRecordDetail from './pages/InspectionRecordDetail';
 
-export default function App() {
+export function InspectorPortalRoutes({ inspectorName }) {
   return (
     <Routes>
-      <Route element={<Layout />}>
+      <Route element={<Layout inspectorName={inspectorName} />}>
         <Route path="/" element={<Navigate to="/schedule" replace />} />
         <Route path="/schedule" element={<InspectionSchedule />} />
         <Route path="/schedule/:id" element={<InspectionDetails />} />
@@ -19,5 +19,13 @@ export default function App() {
         <Route path="*" element={<Navigate to="/schedule" replace />} />
       </Route>
     </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <InspectorPortalRoutes />
+    </BrowserRouter>
   );
 }

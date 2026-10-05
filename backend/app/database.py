@@ -6,6 +6,7 @@ import hashlib
 import secrets
 import sqlite3
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Iterator
@@ -26,14 +27,108 @@ _DEMO_USERS = (
     (3, "Arjun Deshmukh", "Senior Inspector", "Pune Division"),
 )
 
+DEMO_SITE_COORDINATES = {
+    "Asha Bal Vikas Sanstha": {"latitude": 18.5074, "longitude": 73.8077, "radius_m": 100},
+    "Sanjeevani Old Age Support Trust": {"latitude": 18.5020, "longitude": 73.9270, "radius_m": 100},
+    "Prerna Mahila Sangh": {"latitude": 18.5308, "longitude": 73.8475, "radius_m": 100},
+    "Gramin Shiksha Kendra": {"latitude": 18.5793, "longitude": 73.9780, "radius_m": 100},
+    "Nirmal Jeevan Foundation": {"latitude": 18.4672, "longitude": 73.8900, "radius_m": 100},
+    "Disha Punarvasan Kendra": {"latitude": 18.5580, "longitude": 73.8070, "radius_m": 100},
+}
+
+_PORTAL_DEMO_COORDINATES = {
+    "Seva Foundation": (28.6139, 77.2090),
+    "Udaan Welfare Society": (28.5355, 77.3910),
+    "Jan Kalyan Trust": (28.7041, 77.1025),
+    "Shakti Rural Development Centre": (28.4595, 77.0266),
+    "Hope Community Foundation": (28.4089, 77.3178),
+}
+
+_DEMO_SITE_LOCATIONS = {
+    "Asha Bal Vikas Sanstha": "Kothrud, Pune",
+    "Sanjeevani Old Age Support Trust": "Hadapsar, Pune",
+    "Prerna Mahila Sangh": "Shivaji Nagar, Pune",
+    "Gramin Shiksha Kendra": "Wagholi, Pune",
+    "Nirmal Jeevan Foundation": "Kondhwa, Pune",
+    "Disha Punarvasan Kendra": "Aundh, Pune",
+}
+
+_today = date.today()
 _DEMO_SCHEDULES = (
-    ("SCH-1001", "Asha Bal Vikas Sanstha", "Kothrud, Pune", "2026-09-29", "10:30 AM", "Ramesh Kadam", "Scheduled"),
-    ("SCH-1002", "Sanjeevani Old Age Support Trust", "Hadapsar, Pune", "2026-09-29", "02:00 PM", "Ramesh Kadam", "Scheduled"),
+    ("SCH-1001", "Asha Bal Vikas Sanstha", "Kothrud, Pune", (_today + timedelta(days=2)).isoformat(), "10:30 AM", "Ramesh Kadam", "Scheduled", 18.5074, 73.8077, 100),
+    ("SCH-1002", "Sanjeevani Old Age Support Trust", "Hadapsar, Pune", (_today + timedelta(days=4)).isoformat(), "02:00 PM", "Ramesh Kadam", "Scheduled", 18.5020, 73.9270, 100),
 )
 
 _DEMO_INSPECTIONS = (
-    ("REC-1001", "Nirmal Jeevan Foundation", "Kondhwa, Pune", "2026-09-18", "10:00 AM", "Ramesh Kadam", "Verified", "Records and facilities found in order.", None, None, None, None, None, None, None, None, "not_configured"),
+    ("REC-1001", "Nirmal Jeevan Foundation", "Kondhwa, Pune", "2026-09-18", "10:00 AM", "Ramesh Kadam", "Verified", "Records and facilities found in order.", None, 18.4672, 73.8900, 8, "2026-09-18T10:00:00+05:30", None, 0, 1, "verified", "demo-inspection-photo"),
+    ("REC-1002", "Asha Bal Vikas Sanstha", "Kothrud, Pune", "2026-09-20", "11:15 AM", "Sunita Patil", "Verified", "Demo visit inside the registered boundary.", "SCH-1001", 18.5075, 73.8078, 12, "2026-09-20T11:15:00+05:30", None, 14, 1, "verified", "demo-inspection-photo"),
+    ("REC-1003", "Sanjeevani Old Age Support Trust", "Hadapsar, Pune", "2026-09-22", "02:20 PM", "Arjun Deshmukh", "Flagged", "Demo visit outside the configured boundary.", "SCH-1002", 18.5045, 73.9300, 10, "2026-09-22T14:20:00+05:30", None, 320, 0, "outside_radius", "demo-inspection-photo"),
+    ("REC-1004", "Prerna Mahila Sangh", "Shivaji Nagar, Pune", "2026-09-25", "09:40 AM", "Ramesh Kadam", "Submitted", "Demo record awaiting authority review.", None, 18.5308, 73.8475, 18, "2026-09-25T09:40:00+05:30", None, None, None, "not_configured", "demo-inspection-photo"),
+    ("REC-1005", "Gramin Shiksha Kendra", "Wagholi, Pune", "2026-09-28", "03:10 PM", "Sunita Patil", "Verified", "Demo visit inside the registered boundary.", None, 18.5793, 73.9780, 9, "2026-09-28T15:10:00+05:30", None, 0, 1, "verified", "demo-inspection-photo"),
 )
+
+def _seed_demo_inspection_history(connection: sqlite3.Connection) -> None:
+    india_timezone = timezone(timedelta(hours=5, minutes=30))
+    organizations = connection.execute(
+        """SELECT name, location, latitude, longitude
+        FROM organizations ORDER BY name"""
+    ).fetchall()
+    inspectors = [item[0] for item in _DEMO_USERS]
+    deleted_ids = {
+        row["id"] for row in connection.execute("SELECT id FROM deleted_inspections")
+    }
+    rows = []
+    for index in range(30):
+        inspection_id = f"DEMO-HIST-{index + 1:03d}"
+        if inspection_id in deleted_ids:
+            continue
+        organization = organizations[(index * 7) % len(organizations)]
+        captured_at = datetime.now(india_timezone).replace(second=0, microsecond=0) - timedelta(
+            days=((index * 11) % 30) + 1,
+            hours=index % 8,
+        )
+        status = ("Verified", "Verified", "Submitted", "Flagged", "Verified")[index % 5]
+        latitude = organization["latitude"]
+        longitude = organization["longitude"]
+        distance_m = 12.0
+        location_verified = 1
+        location_check_status = "verified"
+        if status == "Flagged" and latitude is not None:
+            latitude += 0.004
+            distance_m = 445.0
+            location_verified = 0
+            location_check_status = "outside_radius"
+        rows.append(
+            (
+                inspection_id,
+                organization["name"],
+                organization["location"],
+                captured_at.date().isoformat(),
+                captured_at.strftime("%I:%M %p"),
+                inspectors[index % len(inspectors)],
+                status,
+                "Fictional historical demo inspection.",
+                latitude,
+                longitude,
+                10.0,
+                captured_at.isoformat(),
+                captured_at.isoformat(),
+                distance_m,
+                location_verified,
+                location_check_status,
+                "demo-inspection-photo",
+                captured_at.astimezone(timezone.utc).isoformat(),
+            )
+        )
+    connection.executemany(
+        """INSERT OR IGNORE INTO inspections (
+            id, organization, location, date, time, inspector, status, notes,
+            latitude, longitude, location_accuracy_m, location_captured_at,
+            photo_captured_at, location_distance_m, location_verified,
+            location_check_status, photo_media_id, submitted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
 
 
 def _initialize_connection(connection: sqlite3.Connection) -> None:
@@ -60,7 +155,23 @@ def _initialize_connection(connection: sqlite3.Connection) -> None:
                 date TEXT NOT NULL,
                 time TEXT NOT NULL,
                 inspector TEXT NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                site_latitude REAL,
+                site_longitude REAL,
+                site_radius_m REAL
+            );
+            CREATE TABLE IF NOT EXISTS organizations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                reg TEXT NOT NULL UNIQUE,
+                location TEXT NOT NULL,
+                address TEXT NOT NULL,
+                verification TEXT NOT NULL DEFAULT 'Pending',
+                risk TEXT NOT NULL DEFAULT 'Review',
+                latitude REAL,
+                longitude REAL,
+                radius_m REAL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_schedules_date ON schedules(date);
             CREATE TABLE IF NOT EXISTS inspections (
@@ -73,14 +184,23 @@ def _initialize_connection(connection: sqlite3.Connection) -> None:
                 status TEXT NOT NULL,
                 notes TEXT,
                 schedule_id TEXT,
+                scheduled_date TEXT,
+                scheduled_time TEXT,
                 latitude REAL,
                 longitude REAL,
                 location_accuracy_m REAL,
                 location_captured_at TEXT,
+                photo_captured_at TEXT,
+                submitted_at TEXT,
                 client_submission_id TEXT UNIQUE,
                 location_distance_m REAL,
                 location_verified INTEGER,
-                location_check_status TEXT
+                location_check_status TEXT,
+                photo_media_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS deleted_inspections (
+                id TEXT PRIMARY KEY,
+                deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_inspections_date ON inspections(date);
             CREATE TABLE IF NOT EXISTS portal_data (
@@ -103,24 +223,142 @@ def _initialize_connection(connection: sqlite3.Connection) -> None:
                 media_type TEXT NOT NULL,
                 content BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reverse_geocode_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                cached_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
+        inspection_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(inspections)")
+        }
+        for column_name in ("photo_media_id", "scheduled_date", "scheduled_time", "photo_captured_at", "submitted_at"):
+            if column_name not in inspection_columns:
+                connection.execute(f"ALTER TABLE inspections ADD COLUMN {column_name} TEXT")
+        india_timezone = timezone(timedelta(hours=5, minutes=30))
+        legacy_submissions = connection.execute(
+            """SELECT id, date, time, location_captured_at FROM inspections
+            WHERE client_submission_id IS NOT NULL
+            AND location_captured_at IS NOT NULL
+            AND submitted_at IS NULL
+            AND (scheduled_date IS NULL OR scheduled_time IS NULL)"""
+        ).fetchall()
+        for submission in legacy_submissions:
+            captured_at = datetime.fromisoformat(
+                submission["location_captured_at"].replace("Z", "+00:00")
+            )
+            if captured_at.tzinfo is None:
+                captured_at = captured_at.replace(tzinfo=timezone.utc)
+            captured_local = captured_at.astimezone(india_timezone)
+            connection.execute(
+                """UPDATE inspections SET
+                    scheduled_date = COALESCE(scheduled_date, date),
+                    scheduled_time = COALESCE(scheduled_time, time),
+                    date = ?, time = ?
+                WHERE id = ?""",
+                (
+                    captured_local.date().isoformat(),
+                    captured_local.strftime("%I:%M %p"),
+                    submission["id"],
+                ),
+            )
+        schedule_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(schedules)")
+        }
+        for column_name in ("site_latitude", "site_longitude", "site_radius_m"):
+            if column_name not in schedule_columns:
+                connection.execute(f"ALTER TABLE schedules ADD COLUMN {column_name} REAL")
         connection.executemany(
             "INSERT OR IGNORE INTO users (id, name, designation, region) VALUES (?, ?, ?, ?)",
             _DEMO_USERS,
         )
+        seeded_organizations = [
+            (
+                item["id"], item["name"], item["reg"], item["location"],
+                item["address"], item["verification"], item["risk"],
+                *_PORTAL_DEMO_COORDINATES.get(item["name"], (None, None)),
+                100 if item["name"] in _PORTAL_DEMO_COORDINATES else None,
+            )
+            for item in PORTAL_DEMO_DATA["organizations"]
+        ]
+        portal_names = {item["name"] for item in PORTAL_DEMO_DATA["organizations"]}
+        seeded_organizations.extend(
+            (
+                f"demo-site-{index:02d}", name, f"DEMO-PUNE-{index:02d}", location,
+                location, "Verified", "Review", site["latitude"], site["longitude"], site["radius_m"],
+            )
+            for index, (name, site) in enumerate(DEMO_SITE_COORDINATES.items(), start=1)
+            if name not in portal_names
+            for location in (_DEMO_SITE_LOCATIONS[name],)
+        )
         connection.executemany(
-            "INSERT OR IGNORE INTO schedules (id, organization, location, date, time, inspector, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            """INSERT OR IGNORE INTO organizations
+            (id, name, reg, location, address, verification, risk, latitude, longitude, radius_m)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            seeded_organizations,
+        )
+        connection.executemany(
+            """INSERT OR IGNORE INTO schedules
+            (id, organization, location, date, time, inspector, status,
+            site_latitude, site_longitude, site_radius_m)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             _DEMO_SCHEDULES,
         )
+        connection.executemany(
+            """UPDATE schedules SET site_latitude = ?, site_longitude = ?, site_radius_m = ?
+            WHERE id = ? AND site_latitude IS NULL""",
+            [
+                (item[7], item[8], item[9], item[0])
+                for item in _DEMO_SCHEDULES
+            ],
+        )
+        connection.executemany(
+            """UPDATE schedules SET location = ?, date = ?, time = ?, inspector = ?
+            WHERE id = ? AND status = 'Scheduled' AND date < ?""",
+            [
+                (item[2], item[3], item[4], item[5], item[0], date.today().isoformat())
+                for item in _DEMO_SCHEDULES
+            ],
+        )
+        deleted_inspection_ids = {
+            row["id"] for row in connection.execute("SELECT id FROM deleted_inspections")
+        }
         connection.executemany(
             """INSERT OR IGNORE INTO inspections (
                 id, organization, location, date, time, inspector, status, notes,
                 schedule_id, latitude, longitude, location_accuracy_m,
                 location_captured_at, client_submission_id, location_distance_m,
-                location_verified, location_check_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            _DEMO_INSPECTIONS,
+                location_verified, location_check_status, photo_media_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [item for item in _DEMO_INSPECTIONS if item[0] not in deleted_inspection_ids],
+        )
+        connection.executemany(
+            """UPDATE inspections SET
+                latitude = COALESCE(latitude, ?),
+                longitude = COALESCE(longitude, ?),
+                location_accuracy_m = COALESCE(location_accuracy_m, ?),
+                location_captured_at = COALESCE(location_captured_at, ?),
+                location_distance_m = COALESCE(location_distance_m, ?),
+                location_verified = COALESCE(location_verified, ?),
+                location_check_status = CASE
+                    WHEN location_check_status IS NULL OR location_check_status = 'not_configured'
+                    THEN ? ELSE location_check_status END,
+                photo_media_id = COALESCE(photo_media_id, ?)
+            WHERE id = ? AND client_submission_id IS NULL""",
+            [
+                (item[9], item[10], item[11], item[12], item[14], item[15], item[16], item[17], item[0])
+                for item in _DEMO_INSPECTIONS
+                if item[0] not in deleted_inspection_ids
+            ],
+        )
+        _seed_demo_inspection_history(connection)
+        connection.execute(
+            """UPDATE schedules SET status = 'Completed'
+            WHERE id IN (
+                SELECT schedule_id FROM inspections
+                WHERE client_submission_id IS NOT NULL AND schedule_id IS NOT NULL
+            ) AND status = 'Scheduled'"""
         )
         connection.execute(
             "INSERT OR IGNORE INTO portal_data (data_key, payload) VALUES (?, ?)",
